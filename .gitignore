@@ -3,3 +3,11 @@
 
 # Ada Library Information
 *.ali
+*.png
+*.mp4
+*.pdb
+*.txt
+DistancesCheckpoint*
+*.md
+*.pyc
+
