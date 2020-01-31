@@ -229,9 +229,6 @@ def Read_Data(prot1,prot2,type='models',models =(0,1),RMSD=True):
     plt.clf() #Clear the plot, otherwise it will give an error when plotting the loss
     plt.close()
 
-    # rmsd = RMSD_numpy(Center_numpy(np.vstack(X1_coordinates)),Center_numpy(np.vstack(X2_coordinates)))
-    # plt.plot(rmsd.numpy())
-    # plt.show()
     return data_obs
 def expand_by(x,sample_shape):
     x_shape = x.shape
@@ -323,51 +320,6 @@ def Run(data_obs, average,name1):
     T2_mean = T2_post_samples.mean(axis=0)
     T2_variance = T2_post_samples.var(axis=0)
 
-    def Old_sampling_extraction():
-        '''Pyro 0.41 mcmc sampling'''
-        #Rotation matrix stats
-        ri_vec_marginal_1 = mcmc.marginal(sites=["ri_vec"])
-        ri_vec_marginal_1 = torch.cat(list(ri_vec_marginal_1.support(flatten=True).values()), dim=-1).cpu().numpy() #Where the samples are stored
-        params = ['ri_vec[0]','ri_vec[1]','ri_vec[2]']
-        df = pd.DataFrame(ri_vec_marginal_1, columns= params).transpose()
-        df_summary = df.apply(pd.Series.describe, axis=1)[["mean", "std", "25%", "50%", "75%"]]
-        df_summary.to_csv("ri_vec_stats_{}.txt".format(name1),sep='\t')
-        # Rotation matrix output
-        ri_vec_marginal = mcmc.marginal(["ri_vec"]).empirical["ri_vec"]
-        ri_vec_mean = ri_vec_marginal.mean
-        ri_vec_variance = ri_vec_marginal.variance
-        R = sample_R(ri_vec_mean)
-
-        # Mean structure stats
-        M_marginal_1 = mcmc.marginal(sites=["M"])
-        M_marginal_1 = torch.cat(list(M_marginal_1.support(flatten=True).values()), dim=-1).cpu().numpy()
-        params = ['M[{}]'.format(i) for i in range(0,len(data1))]
-        label_one = onp.array(params)
-        label_two = onp.array(['x', 'y', 'z'])
-        cols = pd.MultiIndex.from_product([label_one, label_two])
-        df = pd.DataFrame(M_marginal_1.T.reshape(samples, -1), columns=cols).transpose()
-        df_summary = df.apply(pd.Series.describe, axis=1)[["mean", "std", "25%", "50%", "75%"]]
-        df_summary.to_csv("M_stats_{}.txt".format(name1),sep='\t')
-
-        # Mean structure M output
-        M_vec_marginal = mcmc.marginal(["M"]).empirical["M"]
-        M_vec_mean = M_vec_marginal.mean
-        M_vec_variance= M_vec_marginal.variance
-        M = M_vec_mean
-        #M = Center_torch(M_vec_mean.detach())
-
-        # Translation stats
-        T_marginal_1 = mcmc.marginal(sites=["T2"])
-        T_marginal_1 = torch.cat(list(T_marginal_1.support(flatten=True).values()), dim=-1).cpu().numpy()
-        params = ['T[0]','T[1]','T[2]']
-        df = pd.DataFrame(T_marginal_1, columns= params).transpose()
-        df_summary = df.apply(pd.Series.describe, axis=1)[["mean", "std", "25%", "50%", "75%"]]
-        df_summary.to_csv("T_stats_{}.txt".format(name1),sep='\t')
-        # Translation T output
-        T2_vec_marginal = mcmc.marginal(["T2"]).empirical["T2"]
-        T2_vec_mean = T2_vec_marginal.mean
-        T2_vec_variance = T2_vec_marginal.variance
-
     #Observed
     X1 = data1 #- T1_vec_mean.cpu().numpy()  # X1 -T1
     X2 = onp.dot(data2 - T2_mean, onp.transpose(R))  # (X2-T2)R-1
@@ -402,16 +354,16 @@ def Run(data_obs, average,name1):
     ax.legend()
 
     plt.title("Initialized MCMC and NUTS model")
-    plt.savefig("Bayesian_Result_Samples_{}_{}_chains_{}_NEW".format(name1,samples + warmup,chains))
+    plt.savefig("{}_PLOTS_and_FILES/Bayesian_Result_Samples_{}_{}".format(name1,name1,samples + warmup))
 
     plt.clf()
-    plt.plot(RMSD_numpy(data1,data2), linewidth = 8.0)
-    plt.plot(RMSD_numpy(X1,X2), linewidth=8.0)
+    plt.plot(RMSD(torch.from_numpy(data1),torch.from_numpy(data2)), linewidth = 8.0)
+    plt.plot(RMSD(torch.from_numpy(X1),torch.from_numpy(X2)), linewidth=8.0)
     plt.ylabel('Pairwise distances',fontsize='46')
     plt.xlabel('Amino acid position',fontsize='46')
     plt.title('{}'.format(name1.upper()),fontsize ='46')
     plt.gca().legend(('RMSD', 'Theseus-PP'),fontsize='40')
-    plt.savefig(r"Distance_Differences_Average_Bayesian_{}_NEW".format(name1))
+    plt.savefig("{}_PLOTS_and_FILES/Distance_Differences_Average_Bayesian_{}".format(name1,name1))
     plt.close()
 
 
@@ -433,7 +385,7 @@ def Write_PDB(initialPDB, Rotation, Translation):
         atom.transform(Rotation, -Translation)
     io = PDBIO()
     io.set_structure(structure)
-    io.save("Transformed_{}".format(ntpath.basename(initialPDB)))
+    io.save("{}_PLOTS_and_FILES/Transformed_{}".format(initialPDB,ntpath.basename(initialPDB)))
 def write_ATOM_line(structure, file_name):
     import os
     """Transform coordinates to PDB file: Add intermediate coordinates to be able to visualize Mean structure in PyMOL"""
@@ -472,7 +424,7 @@ def write_ATOM_line(structure, file_name):
 def Pymol(*args):
     '''Visualization program'''
     #LAUNCH PYMOL
-    launch=True
+    launch=False
     if launch:
         pymol.pymol_argv = ['pymol'] + sys.argv[1:]
         pymol.finish_launching(['pymol'])
@@ -501,27 +453,27 @@ def Pymol(*args):
         pymol.cmd.bg_color("white")
         pymol.cmd.extend("Colour_Backbone", Colour_Backbone)
         Colour_Backbone(sname,color,color_digit)
-    pymol.cmd.png("Superposition_Bayesian_Pymol_{}".format(snames[0].split('_')[2]))
+    pymol.cmd.png("{}_PLOTS_and_FILES/Superposition_Bayesian_Pymol_{}".format(snames[0].split('_')[1],snames[0].split('_')[1]))
 def Pymol_Samples(data1,data2,name1,R_samples,T_samples,samples):
     '''Create the PDB files to be sent to plot to PyMOL'''
     #Process the dataframes
     indexes = rnd.sample(range(0, samples), samples) #not warm up samples
     X1 = data1
     plt.clf()
-    plt.plot(RMSD_numpy(data1, data2), linewidth=2.0)
+    plt.plot(RMSD(torch.from_numpy(data1),torch.from_numpy(data2)), linewidth=2.0)
     for i in range(0,samples):
         Rotation = sample_R(R_samples[i,:]) #torch
         Translation = T_samples[i,:] #numpy
         X2 = onp.dot(data2 - Translation, onp.transpose(Rotation))
-        write_ATOM_line(X2, os.path.join("{}_PDB_files_150_samples".format(name1),'Result_MCMC_{}_X2_{}.pdb'.format(name1,i)))
-        plt.plot(RMSD_numpy(X1,X2), linewidth=0.5,color = plt.cm.autumn(i))
+        write_ATOM_line(X2, os.path.join("{}_PLOTS_and_FILES".format(name1),'Result_{}_X2_{}.pdb'.format(name1,i)))
+        plt.plot(RMSD(torch.from_numpy(X1),torch.from_numpy(X2)), linewidth=0.5,color = plt.cm.autumn(i))
     plt.ylabel('Pairwise distances', fontsize='10')
     plt.xlabel('Amino acid position', fontsize='10')
     plt.title('{}'.format(name1.upper()), fontsize='10')
     plt.gca().legend(('RMSD', 'Theseus-PP'), fontsize='10')
-    plt.savefig(r"Distance_Differences_Bayesian_{}.png".format(name1))
+    plt.savefig("{}_PLOTS_and_FILES/Distance_Differences_Bayesian_{}.png".format(name1,name1))
     plt.close()
-    names = [os.path.join("{}_PDB_files_150_samples".format(name1),'Result_MCMC_{}_X2_{}.pdb'.format(name1,i)) for i in indexes] #exchange indexes with range(0,samples)
+    names = [os.path.join("{}_PLOTS_and_FILES/".format(name1),'Result_{}_X2_{}.pdb'.format(name1,i)) for i in indexes] #exchange indexes with range(0,samples)
     Pymol(*names)
 def Folders(folder_name):
     """ Folder for all the generated images It will updated everytime!!! Save the previous folder before running again. Creates folder in current directory"""
@@ -544,23 +496,22 @@ def Folders(folder_name):
         os.makedirs(newpath,0o777)
 
 #if __name__ == "__main__":
-name1 = '2ksz' #2nl7:139 #2do0=114
-name2 ='2ksz'
-models = (0,1)
-samples =50
+name1 = '1zwg' #2nl7:139 #2do0=114
+name2 ='1zwg'
+models = (0,3)
+samples =100
 print(name1 + "\t" + str(models))
-Folders("{}_PDB_files_{}_samples".format(name1,samples))
+Folders("{}_PLOTS_and_FILES/".format(name1))
 data_obs = Read_Data('../PDB_files/{}.pdb'.format(name1), '../PDB_files/{}.pdb'.format(name2),type='models',models =models,RMSD=True)
 max_var = Max_variance(data_obs[0])
 average = Average_Structure(data_obs)
 data1, data2 = data_obs
 
-write_ATOM_line(data1, os.path.join('{}_PDB_files_{}_samples'.format(name1,samples),'RMSD_{}_data1.pdb'.format(name1)))
-write_ATOM_line(data2, os.path.join('{}_PDB_files_{}_samples'.format(name2,samples,name2),'RMSD_{}_data2.pdb'.format(name1)))
+write_ATOM_line(data1, os.path.join('{}_PLOTS_and_FILES/'.format(name1),'RMSD_{}_data1.pdb'.format(name1)))
+write_ATOM_line(data2, os.path.join('{}_PLOTS_and_FILES/'.format(name2),'RMSD_{}_data2.pdb'.format(name1)))
 
 
-Pymol('{}_PDB_files_{}_samples/RMSD_{}_data1.pdb'.format(name1,samples,name1), '{}_PDB_files_{}_samples/RMSD_{}_data2.pdb'.format(name2,samples,name2))
-exit()
+#Pymol('{}_PLOTS_and_FILES//RMSD_{}_data1.pdb'.format(name1,name1), '{}_PLOTS_and_FILES//RMSD_{}_data2.pdb'.format(name2,name2))
 data_obs = max_var, data1, data2
 start  = time.time()
 T2, R, M, X1, X2, ri_vec_samples,M_samples,T_samples = Run(data_obs, average,name1)
@@ -569,12 +520,12 @@ stop = time.time()
 
 print("Time:", stop-start)
 
-write_ATOM_line(M, 'M.pdb')
-write_ATOM_line(X1, os.path.join("{}_PDB_files_150_samples".format(name1),'Result_MCMC_{}_X1.pdb'.format(name1)))
-write_ATOM_line(X2, os.path.join("{}_PDB_files_150_samples".format(name1),'Result_MCMC_{}_X2.pdb'.format(name2)))
+write_ATOM_line(M, os.path.join("{}_PLOTS_and_FILES/".format(name1),'M_{}.pdb'.format(name1)))
+write_ATOM_line(X1, os.path.join("{}_PLOTS_and_FILES/".format(name1),'Result_{}_X1.pdb'.format(name1)))
+write_ATOM_line(X2, os.path.join("{}_PLOTS_and_FILES/".format(name1),'Result_{}_X2.pdb'.format(name2)))
 #Write_PDB(r"../PDB_files/{}.pdb".format(name1), onp.transpose(R), T1)
 #Write_PDB(r"../PDB_files/{}.pdb".format(name2), onp.transpose(R), T2)
-#Pymol("Result_MCMC_{}_X1.pdb".format(name1), "Result_MCMC_{}_X2.pdb".format(name2))
+#Pymol("Result_{}_X1.pdb".format(name1), "Result_{}_X2.pdb".format(name2))
 Pymol_Samples(data1,data2,name1,ri_vec_samples,T_samples,samples)
 
 
