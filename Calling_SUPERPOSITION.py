@@ -7,9 +7,9 @@ import torch
 import time
 import pandas as pd
 import timeit
-name1 = '1bz1' #2nl7:139 #2do0=114
-name2 ='5ufj'
-models = (1,1)
+name1 = '1zwg' #2nl7:139 #2do0=114
+name2 ='1zwg'
+models = (0,3)
 
 
 def random_with_N_digits(n):
