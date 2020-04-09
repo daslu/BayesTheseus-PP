@@ -300,10 +300,11 @@ def Run(data_obs, average,name1):
     map_points = _get_initial_trace(data_obs,average)
     # MCMC initialization
     chains=1
-    warmup= 50
-    samples = 100
-    initialize = True
+    warmup= 500
+    samples = 1000
+    initialize = False
     if initialize:
+        print("Initializing with MAP estimation")
         #Initialize NUTS's trace with the MAP estimate of the model
         init_params, potential_fn, transforms, _ = initialize_model(model,model_args=(data_obs,), num_chains=chains,jit_compile=True,skip_jit_warnings=True)
         map_points = _get_initial_trace(data_obs, average)
@@ -416,7 +417,7 @@ def Run(data_obs, average,name1):
     ax.legend()
 
     plt.title("Initialized MCMC and NUTS model")
-    plt.savefig("Bayesian_Result_Samples_{}_{}_chains_{}".format(name1,samples + warmup,chains))
+    plt.savefig("{}_PLOTS_and_FILES_PYRO/Bayesian_Result_Samples_{}_{}_chains_{}".format(name1,name1,samples + warmup,chains))
 
     plt.clf()
     plt.plot(RMSD(data1.cpu(),data2.cpu()).numpy(), linewidth = 8.0)
@@ -425,7 +426,7 @@ def Run(data_obs, average,name1):
     plt.xlabel('Amino acid position',fontsize='46')
     plt.title('{}'.format(name1.upper()),fontsize ='46')
     plt.gca().legend(('RMSD', 'Theseus-PP'),fontsize='40')
-    plt.savefig(r"Distance_Differences_Average_Bayesian_{}".format(name1))
+    plt.savefig("{}_PLOTS_and_FILES_PYRO/Distance_Differences_Average_Bayesian_{}".format(name1,name1))
     plt.close()
 
 
@@ -514,7 +515,9 @@ def Pymol(*args):
         pymol.cmd.bg_color("white")
         pymol.cmd.extend("Colour_Backbone", Colour_Backbone)
         Colour_Backbone(sname,color,color_digit)
-    pymol.cmd.png("Superposition_Bayesian_Pymol_{}".format(snames[0].split('_')[2]))
+    print(snames[0].split('_')[1])
+    exit()
+    pymol.cmd.png("{}_PLOTS_and_FILES_PYRO/Superposition_Bayesian_Pymol_{}".format(snames[0].split('_')[1],snames[0].split('_')[1]))
 def Pymol_Samples(data1,data2,name1,R_samples,T_samples,samples):
     '''Create the PDB files to be sent to plot to PyMOL'''
     #Process the dataframes
@@ -527,15 +530,15 @@ def Pymol_Samples(data1,data2,name1,R_samples,T_samples,samples):
         Rotation = sample_R(R_samples[i,:]) #torch
         Translation = T_samples[i,:] #numpy
         X2 = np.dot(data2.numpy() - Translation, np.transpose(Rotation.cpu().numpy()))
-        write_ATOM_line(X2, os.path.join("{}_PDB_files_150_samples".format(name1),'Result_MCMC_{}_X2_{}.pdb'.format(name1,i)))
+        write_ATOM_line(X2, os.path.join("{}_PLOTS_and_FILES_PYRO".format(name1),'Result_MCMC_{}_X2_{}.pdb'.format(name1,i)))
         plt.plot(RMSD(torch.from_numpy(X1), torch.from_numpy(X2)).numpy(), linewidth=0.5,color = plt.cm.autumn(i))
     plt.ylabel('Pairwise distances', fontsize='10')
     plt.xlabel('Amino acid position', fontsize='10')
     plt.title('{}'.format(name1.upper()), fontsize='10')
     plt.gca().legend(('RMSD', 'Theseus-PP'), fontsize='10')
-    plt.savefig(r"Distance_Differences_Bayesian_{}.png".format(name1))
+    plt.savefig("{}_PLOTS_and_FILES_PYRO/Distance_Differences_Bayesian_{}.png".format(name1,name1),dpi=600)
     plt.close()
-    names = [os.path.join("{}_PDB_files_150_samples".format(name1),'Result_MCMC_{}_X2_{}.pdb'.format(name1,i)) for i in indexes] #exchange indexes with range(0,samples)
+    names = [os.path.join("{}_PLOTS_and_FILES_PYRO".format(name1),'Result_MCMC_{}_X2_{}.pdb'.format(name1,i)) for i in indexes] #exchange indexes with range(0,samples)
     Pymol(*names)
 def Folders(folder_name):
     """ Folder for all the generated images It will updated everytime!!! Save the previous folder before running again. Creates folder in current directory"""
@@ -558,19 +561,19 @@ def Folders(folder_name):
         os.makedirs(newpath,0o777)
 
 #if __name__ == "__main__":
-name1 = '2ys9' #2nl7:139 #2do0=114
-name2 ='2ys9'
+name1 = '2lmp' #2nl7:139 #2do0=114
+name2 ='2lmp'
 models = (0,3)
-samples =50
+samples =100
 print(name1 + "\t" + str(models))
-Folders("{}_PDB_files_150_samples".format(name1))
+Folders("{}_PLOTS_and_FILES_PYRO".format(name1))
 data_obs = Read_Data('../PDB_files/{}.pdb'.format(name1), '../PDB_files/{}.pdb'.format(name2),type='models',models =models,RMSD=True)
 max_var = Max_variance(data_obs[0])
 average = Average_Structure(data_obs)
 data1, data2 = data_obs
 
-write_ATOM_line(data1, os.path.join("{}_PDB_files".format(name1),'RMSD_{}_data1.pdb'.format(name1)))
-write_ATOM_line(data2, os.path.join("{}_PDB_files".format(name1),'RMSD_{}_data2.pdb'.format(name1)))
+write_ATOM_line(data1, os.path.join("{}_PLOTS_and_FILES_PYRO".format(name1),'RMSD_{}_data1.pdb'.format(name1)))
+write_ATOM_line(data2, os.path.join("{}_PLOTS_and_FILES_PYRO".format(name1),'RMSD_{}_data2.pdb'.format(name1)))
 #Pymol('{}_PDB_files/RMSD_{}_data1.pdb'.format(name1,name1), '{}_PDB_files/RMSD_{}_data2.pdb'.format(name2,name2))
 data_obs = max_var, data1, data2
 start  = time.time()
@@ -583,8 +586,8 @@ print('Memory Usage:')
 print('Allocated:', round(torch.cuda.memory_allocated(0) / 1024 ** 3, 1), 'GB')
 print('Cached:   ', round(torch.cuda.memory_cached(0) / 1024 ** 3, 1), 'GB')
 write_ATOM_line(M, 'M.pdb')
-write_ATOM_line(X1, os.path.join("{}_PDB_files_150_samples".format(name1),'Result_MCMC_{}_X1.pdb'.format(name1)))
-write_ATOM_line(X2, os.path.join("{}_PDB_files_150_samples".format(name1),'Result_MCMC_{}_X2.pdb'.format(name2)))
+write_ATOM_line(X1, os.path.join("{}_PLOTS_and_FILES_PYRO".format(name1),'Result_MCMC_{}_X1.pdb'.format(name1)))
+write_ATOM_line(X2, os.path.join("{}_PLOTS_and_FILES_PYRO".format(name1),'Result_MCMC_{}_X2.pdb'.format(name2)))
 #Write_PDB(r"../PDB_files/{}.pdb".format(name1), np.transpose(R), T1)
 #Write_PDB(r"../PDB_files/{}.pdb".format(name2), np.transpose(R), T2)
 #Pymol("Result_MCMC_{}_X1.pdb".format(name1), "Result_MCMC_{}_X2.pdb".format(name2))

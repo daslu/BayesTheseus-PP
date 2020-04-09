@@ -15,19 +15,19 @@ import Bio.PDB as PDB
 from Bio.Seq import MutableSeq
 from Bio.PDB.Polypeptide import is_aa
 from Bio.SVDSuperimposer import SVDSuperimposer
-from pyro.infer.mcmc.api import MCMC
 #Pymol
 import pymol
 from mpl_toolkits.mplot3d import Axes3D
 from matplotlib import pyplot
 import scipy.stats
-# TORCH: "Tensors"
+# TORCH:
 import torch
 from torch.distributions import constraints, transform_to
 from torch.optim import Adam, LBFGS
 import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib as mpl
+import matplotlib.patches as mpatches
 import tqdm
 from ignite.handlers import EarlyStopping
 from ignite.engine import Engine, Events
@@ -44,7 +44,7 @@ from numpyro.optim import _NumpyroOptim
 #mp.set_start_method('spawn') ###For increasing number of chains
 tqdm.monitor_interval = 0
 #XLA_FLAGS="--xla_gpu_cuda_data_dir=/usr/lib/cuda"
-numpyro.set_platform("cpu") #slowwwww
+#numpyro.set_platform("gpu") #slowwwww
 tqdm.monitor_interval = 0
 mpl.use('agg') #TkAgg
 numpyro.set_host_device_count(2)
@@ -226,7 +226,8 @@ def expand_by(x,sample_shape):
 def model(data):
     max_var,data1, data2 = data
     ### 1. prior over mean M
-    #M = numpyro.sample("M", dist.StudentT(1,0, 3).expand_by([data1.size(0),data1.size(1)]).to_event(2))
+
+    #M = numpyro.sample("M", dist.StudentT(1, 0, 3), sample_shape=(data1.shape[0], data1.shape[1])) #Also works, change to this
     mu_M = np.array(0)
     mu_M =expand_by(mu_M,[data1.shape[0],data1.shape[1]])
     sd_M = np.array(1)
@@ -268,7 +269,7 @@ def Run(data_obs, average,name1):
     chains=1
     warmup= 500
     samples = 1000
-    rng_key = random.PRNGKey(2)
+    rng_key = random.PRNGKey(4)
 
     # Running MCMC using NUTS as selected kernel
     nuts_kernel = NUTS(model, max_tree_depth=10, init_strategy=init_to_median(15),target_accept_prob=0.8)#,step_size=3)
@@ -296,7 +297,6 @@ def Run(data_obs, average,name1):
     #Observed
     X1 = data1 #- T1_vec_mean.cpu().numpy()  # X1 -T1
     X2 = np.dot(data2 - T2_mean, np.transpose(R))  # (X2-T2)R-1
-
 
     import matplotlib
     matplotlib.rcParams['legend.fontsize'] = 15
@@ -335,11 +335,11 @@ def Run(data_obs, average,name1):
     plt.plot(RMSD(torch.from_numpy(X1),torch.from_numpy(X2)), linewidth=2.0)
     plt.ylabel('Pairwise distances',fontsize='10')
     plt.xlabel('Amino acid position',fontsize='10')
-    plt.ylim(0,20)
+    plt.ylim(0,40)
     plt.tick_params(labelsize=10)
     plt.title('{}'.format(name1.upper()),fontsize ='10')
     plt.gca().legend(('Kabsch', 'Theseus-PP MAP'),fontsize='10')
-    plt.savefig("{}_PLOTS_and_FILES/Distance_Differences_Average_Bayesian_{}".format(name1,name1))
+    plt.savefig("{}_PLOTS_and_FILES/Distance_Differences_Average_Bayesian_{}".format(name1,name1),dpi=600)
     plt.close()
 
     return T2_mean, R, M, X1, X2, ri_vec_post_samples,M_post_samples,T2_post_samples #Values for the mean structure
@@ -401,7 +401,9 @@ def Pymol(*args):
     launch=False
     if launch:
         pymol.pymol_argv = ['pymol'] + sys.argv[1:]
-        pymol.finish_launching(['pymol'])
+        pymol.finish_launching(['pymol','-q'])
+
+    pymol.cmd.set("max_threads", 4) #Deactivate to call pymol GUI
     def Colour_Backbone(selection,color,color_digit):
         #pymol.cmd.select("alphas", "name ca") #apparently nothing is ca
         #pymol.cmd.select("sidechains", "! alphas") #select the opposite from ca, which should be the side chains, not working :(
@@ -429,14 +431,17 @@ def Pymol(*args):
         Colour_Backbone(sname,color,color_digit)
     pymol.cmd.png("{}_PLOTS_and_FILES/Superposition_Bayesian_Pymol_{}".format(snames[0].split('_')[1],snames[0].split('_')[1]))
 def Pymol_Samples(data1,data2,name1,R_samples,T_samples,samples):
-    '''Create the PDB files to be sent to plot to PyMOL'''
+    '''Create the PDB files to be sent to plot to PyMOL. Make plots showing pairwise distances'''
     #Process the dataframes
     indexes = rnd.sample(range(0, samples), samples) #not warm up samples
     X1 = data1
+    T_average = T_samples.mean(axis=0)
+    R_average = sample_R(R_samples.mean(axis=0))
+    X2_average = np.dot(data2 - T_average, np.transpose(R_average))
     plt.clf()
     fig1, ax1 = plt.subplots(figsize=(5,5))
     fig2, ax2 = plt.subplots(figsize=(5,5))
-    ax1.plot(RMSD(torch.from_numpy(data1),torch.from_numpy(data2)), linewidth=2.0)
+    ax1.plot(RMSD(torch.from_numpy(data1),torch.from_numpy(data2)), linewidth=2.0, color="blue", label= "Kalbsh SVD")
     ax2.hist(RMSD_numpy(data1,data2),alpha=1,facecolor="blue",label="Kalbsh SVD")
     for i in range(0,samples):
         Rotation = sample_R(R_samples[i,:]) #torch
@@ -444,14 +449,19 @@ def Pymol_Samples(data1,data2,name1,R_samples,T_samples,samples):
         X2 = np.dot(data2 - Translation, np.transpose(Rotation))
         write_ATOM_line(X2, os.path.join("{}_PLOTS_and_FILES".format(name1),'Result_{}_X2_{}.pdb'.format(name1,i)))
         ax1.plot(RMSD(torch.from_numpy(X1),torch.from_numpy(X2)), linewidth=0.5,color = plt.cm.autumn(i))
-        ax2.hist(RMSD_numpy(X1,X2),alpha=1,facecolor= plt.cm.autumn(i), label="Theseus-PP samples")
+        ax2.hist(RMSD_numpy(X1,X2),alpha=1,facecolor= plt.cm.autumn(i), label="Theseus-PP NUTS samples")
 
+    ax1.plot(RMSD(torch.from_numpy(X1), torch.from_numpy(X2_average)), linewidth=0.5, color="green",label="Theseus-PP NUTS average")
     ax1.set_ylabel('Pairwise distances', fontsize='12')
     ax1.set_xlabel('Amino acid position', fontsize='12')
     ax1.set_title('{}'.format(name1.upper()), fontsize='12')
-    ax1.set_ylim(0,20)
-    ax1.legend(('Kabsch', 'Theseus-PP HMC'), fontsize='12')
-    fig1.savefig("{}_PLOTS_and_FILES/Distance_Differences_Bayesian_{}.png".format(name1,name1))
+    ax1.set_ylim(0,40)
+    green_patch = mpatches.Patch(color='green', label='Theseus-PP NUTS average')
+    orange_patch = mpatches.Patch(color='orange', label='Theseus-PP NUTS samples')
+    blue_patch = mpatches.Patch(color='blue', label='Kabsch SVD')
+    ax1.legend(handles = [blue_patch,orange_patch,green_patch], fontsize=10)
+    #ax1.legend(('Kabsch SVD', "Theseus-PP NUTS samples",'Theseus-PP NUTS average'), fontsize='10',prop={'size': 10})
+    fig1.savefig("{}_PLOTS_and_FILES/Distance_Differences_Bayesian_{}.png".format(name1,name1),dpi=600)
     ax2.set_ylabel("probability")
     ax2.set_title('{} Probability histogram'.format(name1.upper()), fontsize='12')
     fig2.savefig("{}_PLOTS_and_FILES/Probability_Histogram_{}.png".format(name1, name1))
@@ -480,9 +490,9 @@ def Folders(folder_name):
         os.makedirs(newpath,0o777)
 
 #if __name__ == "__main__":
-name1 = '1ahl' #2nl7:139 #2do0=114
-name2 ='1ahl'
-models = (0,2)
+name1 = '2lmp' #2nl7:139 #2do0=114
+name2 ='2lmp'
+models = (0,3)
 samples =100
 print(name1 + "\t" + str(models))
 Folders("{}_PLOTS_and_FILES/".format(name1))
@@ -494,8 +504,8 @@ print(len(data1))
 write_ATOM_line(data1, os.path.join('{}_PLOTS_and_FILES/'.format(name1),'RMSD_{}_data1.pdb'.format(name1)))
 write_ATOM_line(data2, os.path.join('{}_PLOTS_and_FILES/'.format(name1),'RMSD_{}_data2.pdb'.format(name1)))
 
-# Pymol('{}_PLOTS_and_FILES//RMSD_{}_data1.pdb'.format(name1,name1), '{}_PLOTS_and_FILES//RMSD_{}_data2.pdb'.format(name2,name2))
-# exit()
+#Pymol('{}_PLOTS_and_FILES//RMSD_{}_data1.pdb'.format(name1,name1), '{}_PLOTS_and_FILES//RMSD_{}_data2.pdb'.format(name2,name2))
+#exit()
 data_obs = max_var, data1, data2
 start  = time.time()
 T2, R, M, X1, X2, ri_vec_samples,M_samples,T_samples = Run(data_obs, average,name1)
