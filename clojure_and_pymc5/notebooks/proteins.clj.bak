@@ -1,0 +1,135 @@
+(ns proteins
+  (:require
+   [scicloj.tempfiles.api :as tempfiles]
+   [tablecloth.api :as tc]
+   [fastmath.core :as math]
+   [fastmath.random :as random]
+   [tech.v3.datatype :as dtype]
+   [tech.v3.dataset :as dataset]
+   [tech.v3.dataset.tensor :as dataset.tensor]
+   [tech.v3.tensor :as tensor]
+   [tech.v3.datatype.functional :as fun]
+   [aerial.hanami.common :as hc]
+   [aerial.hanami.templates :as ht]
+   [scicloj.kindly.v3.kind :as kind]
+   [scicloj.kindly.v3.api :as kindly]
+   [scicloj.clay.v2.api :as clay]
+   [libpython-clj2.python :refer [py. py.. py.-] :as py]
+   [scicloj.noj.v1.vis :as vis]
+   [scicloj.noj.v1.vis.python :as vis.python]
+   [libpython-clj2.require :refer [require-python]]))
+
+;; https://www.pymc.io/projects/docs/en/stable/learn/core_notebooks/pymc_overview.html
+
+(require-python '[builtins :as python]
+                'operator
+                '[arviz :as az]
+                '[arviz.style :as az.style]
+                '[pandas :as pd]
+                '[matplotlib.pyplot :as plt]
+                '[numpy :as np]
+                '[numpy.random :as np.random]
+                '[pymc :as pm]
+                '[Bio.PDB.PDBParser]
+                '[Bio.PDB]
+                '[Bio.PDB.Polypeptide])
+
+(defn brackets [obj entry]
+  (py. obj __getitem__ entry))
+
+(def colon
+  (python/slice nil nil))
+
+(arviz.style/use "arviz-darkgrid")
+
+
+(defn extract-coordinates-from-pdb
+  ([protein-name]
+   (extract-coordinates-from-pdb protein-name :models))
+  ([protein-name data-type]
+   (let [filepath (str "data/" protein-name ".pdb")
+         parser (Bio.PDB/PDBParser)
+         structure (py. parser get_structure protein-name filepath)]
+     (case data-type
+       :models (-> structure
+                   (->> (map
+                         (fn [model]
+                           (-> model
+                               (->> (mapcat
+                                     (fn [chain]
+                                       (->> chain
+                                            (filter (fn [residue]
+                                                      (-> residue
+                                                          (py. get_resname)
+                                                          (Bio.PDB.Polypeptide/is_aa :standard true))))
+                                            (map (fn [residue]
+                                                   (-> residue
+                                                       (brackets "CA")
+                                                       (py. get_coord)
+                                                       (->> (dtype/->array :float32)))))))))))))
+                   (tensor/->tensor :datatype :float32))))))
+
+(comment
+  (-> "1d3z"
+      extract-coordinates-from-pdb)
+
+  (->> "1ubq"
+       extract-coordinates-from-pdb))
+
+(defn center-1d [xs]
+  (fun/- xs
+         (fun/mean xs)))
+
+(-> [[1 2 3]
+     [4 5 9]]
+    tensor/->tensor
+    (tensor/map-axis center-1d 0))
+
+
+(defn read-data [prots
+                 {:keys [data-type models rmsd?]
+                  :or {data-type :models
+                       models [0 1]
+                       rmsd true}}]
+  (case data-type
+    :models (let [coords (map (fn [prot model]
+                                (-> prot
+                                    extract-coordinates-from-pdb
+                                    (nth model)))
+                              prots
+                              models)
+                  obs (-> coords
+                          (tensor/map-axis center-1d 0))
+                  obs-datasets (->> obs
+                                    (map #(-> %
+                                              dataset.tensor/tensor->dataset
+                                              (tc/rename-columns [:x :y :z]))))]
+              {:coords coords
+               :obs obs
+               :obs-datasets obs-datasets})))
+
+
+
+
+
+(let [name1 "1d3z"
+      name2 "1ubq"
+      models [4 0]
+      samples 100
+      {:keys [obs-datasets]} (read-data [name1 name2]
+                                        {:models models})]
+  (kind/hiccup
+   ['(fn [{:keys [datasets]}]
+       [plotly
+        {:data (->> datasets
+                    (take 1)
+                    (mapv (fn [dataset]
+                            (->> dataset
+                                 (merge {:type :scatter3d
+                                         :mode :lines+markers
+                                         :opacity 0.6
+                                         :line {:width 10}
+                                         :color "red"
+                                         :marker {:size 4}})))))}])
+    {:datasets (->> obs-datasets
+                    (map #(update-vals % vec)))}]))
