@@ -205,6 +205,7 @@
      :y 5))
 
 
+
 (defn ->quaternion [u]
   (let [theta1 (-> u
                    (brackets 1)
@@ -289,18 +290,7 @@
     tensor2d->np-matrix)
 
 
-(let [name1 "1d3z"
-      name2 "1ubq"
-      models [0 0]
-      samples 100
-      {:keys [obs obs-datasets]}
-      (read-data [name1 name2]
-                 {:models models
-                  :limit 5})
-      max-distance (->max-distance-to-origin (obs 0))
-      average-structure (->average-structure obs)
-      shape (dtype/shape (obs 0))]
-  )
+
 
 
 (def results
@@ -312,41 +302,58 @@
         (read-data [name1 name2]
                    {:models models
                     :limit 5})
+        structures (->> obs
+                        (mapv #(tensor/transpose % [1 0])))
         max-distance (->max-distance-to-origin (obs 0))
         average-structure (->average-structure obs)
-        shape (dtype/shape (obs 0))]
+        shape (-> (obs 0)
+                  dtype/shape
+                  reverse
+                  vec)
+        [space-dimension n-residues] shape]
     (py/with [model (pm/Model)]
              (let [M (pm/Normal "M" :shape shape)
                    M0 (pm/Deterministic "M0"
                                         (operator/sub
                                          M
                                          (pt/mean M)))
-                   t (pm/Normal "t" :shape [(shape 1)])
-                   u (pm/Uniform "u" :shape [(shape 1)])
+                   t (pm/Normal "t" :shape [space-dimension])
+                   u (pm/Uniform "u" :shape [space-dimension])
                    R (pm/Deterministic "R" (->quaternion u))
                    U (pm/HalfNormal "U"
                                     :sigma 1
-                                    :shape (shape 0))
+                                    :shape [n-residues])
                    M0_rotated (pm/Deterministic "M0_rotated"
-                                                (-> M0
-                                                    (pt/dot R)))
+                                                (pt/dot R M0))
+                   dunmy (pm/Deterministic "dummy"
+                                           (-> M0_rotated
+                                               ;; conjugating with transpose
+                                               ;; to make broadcasting work
+                                               pt/transpose
+                                               (operator/add t)
+                                               pt/transpose))
                    X1 (pm/MatrixNormal "X1"
                                        :mu M0
-                                       :colcov (np/eye (shape 1))
-                                       :rowcov (pt/diag U)
-                                       :observed (-> (obs 0)
+                                       :rowcov (np/eye space-dimension)
+                                       :colcov (pt/diag U)
+                                       :observed (-> (structures 0)
                                                      tensor2d->np-matrix))
                    X2 (pm/MatrixNormal "X2"
-                                       :mu (-> M0_rotated
-                                               (pt/add t))
-                                       :colcov (np/eye (shape 1))
-                                       :rowcov (pt/diag U)
-                                       :observed (-> (obs 1)
+                                       :mu
+                                       (-> M0_rotated
+                                           ;; conjugating with transpose
+                                           ;; to make broadcasting work
+                                           pt/transpose
+                                           (operator/add t)
+                                           pt/transpose)
+                                       :rowcov (np/eye space-dimension)
+                                       :colcov (pt/diag U)
+                                       :observed (-> (structures 1)
                                                      tensor2d->np-matrix))
                    prior-predictive-samples (pm/sample_prior_predictive)
                    samples (pm/sample :chains 2
-                                      :draws 1000
-                                      :tune 1000)
+                                      :draws 100
+                                      :tune 100)
                    posterior-predictive-samples (pm/sample_posterior_predictive
                                                  samples)]
                {:prior-predictive-samples prior-predictive-samples
@@ -354,11 +361,12 @@
                 :samples samples}))))
 
 
+
 (-> results
     :prior-predictive-samples
     (py.- prior)
     (py.- "M0")
-    np/mean)
+    np/mean) ; should be about zero
 
 (defn py-array->clj [py-array]
   (let [np-array (np/array py-array)]
@@ -403,7 +411,7 @@
                                    first
                                    (py.- shape))]
   (for [chain-idx (range n-chains)
-        sample-idx (range 0 n-samples (quot n-samples 10))]
+        sample-idx (range 0 n-samples (quot n-samples 5))]
     (->> posterior-predictives
          (map (fn [xarray]
                 (-> xarray
@@ -411,6 +419,7 @@
                     (py. __getitem__ sample-idx)
                     np/array
                     py-array->clj
+                    (tensor/transpose [1 0])
                     xyz-tensor->dataset)))
          compare-visually)))
 
@@ -422,17 +431,18 @@
                      (py.- posterior)
                      ((juxt #(py.- % M0)
                             #(py.- % M0_rotated))))
-      [n-chains n-samples _ _] (-> posterior-predictives
+      [n-chains n-samples _ _] (-> posteriors
                                    first
                                    (py.- shape))]
   (for [chain-idx (range n-chains)
-        sample-idx (range 0 n-samples (quot n-samples 10))]
-    (->> posterior-predictives
+        sample-idx (range 0 n-samples (quot n-samples 5))]
+    (->> posteriors
          (map (fn [xarray]
                 (-> xarray
                     (py. __getitem__ chain-idx)
                     (py. __getitem__ sample-idx)
                     np/array
                     py-array->clj
+                    (tensor/transpose [1 0])
                     xyz-tensor->dataset)))
          compare-visually)))
