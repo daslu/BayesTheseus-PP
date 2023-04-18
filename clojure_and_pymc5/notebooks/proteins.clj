@@ -154,10 +154,8 @@
                             (->> dataset
                                  (merge {:type :scatter3d
                                          :mode :lines+markers
-                                         :opacity 0.6
-                                         :line {:width 10
-                                                ;; :color "grey"
-                                                }
+                                         :opacity 0.5
+                                         :line {:width 5}
                                          :marker {:size 4
                                                   :color index
                                                   :colorscale :Viridis}})))))}])
@@ -290,9 +288,6 @@
     tensor2d->np-matrix)
 
 
-
-
-
 (def results
   (let [name1 "1d3z"
         name2 "1ubq"
@@ -301,18 +296,25 @@
         {:keys [obs obs-datasets]}
         (read-data [name1 name2]
                    {:models models
-                    :limit 5})
+                    ;; :limit 6
+                    })
         structures (->> obs
-                        (mapv #(tensor/transpose % [1 0])))
-        max-distance (->max-distance-to-origin (obs 0))
-        average-structure (->average-structure obs)
+                        (mapv #(-> %
+                                   (tensor/transpose [1 0]))))
+        np-structures (->> structures
+                           (mapv tensor2d->np-matrix))
+        ;; max-distance (->max-distance-to-origin (obs 0))
+        ;; average-structure (->average-structure obs)
         shape (-> (obs 0)
                   dtype/shape
                   reverse
                   vec)
         [space-dimension n-residues] shape]
     (py/with [model (pm/Model)]
-             (let [M (pm/Normal "M" :shape shape)
+             (let [M (pm/Cauchy "M"
+                                :alpha 0
+                                :beta 1
+                                :shape shape)
                    M0 (pm/Deterministic "M0"
                                         (operator/sub
                                          M
@@ -321,44 +323,51 @@
                    u (pm/Uniform "u" :shape [space-dimension])
                    R (pm/Deterministic "R" (->quaternion u))
                    U (pm/HalfNormal "U"
-                                    :sigma 1
+                                    :sigma 0.01
                                     :shape [n-residues])
                    M0_rotated (pm/Deterministic "M0_rotated"
                                                 (pt/dot R M0))
-                   dunmy (pm/Deterministic "dummy"
-                                           (-> M0_rotated
-                                               ;; conjugating with transpose
-                                               ;; to make broadcasting work
-                                               pt/transpose
-                                               (operator/add t)
-                                               pt/transpose))
                    X1 (pm/MatrixNormal "X1"
                                        :mu M0
                                        :rowcov (np/eye space-dimension)
                                        :colcov (pt/diag U)
-                                       :observed (-> (structures 0)
-                                                     tensor2d->np-matrix))
+                                       :observed (np-structures 0))
                    X2 (pm/MatrixNormal "X2"
-                                       :mu
-                                       (-> M0_rotated
-                                           ;; conjugating with transpose
-                                           ;; to make broadcasting work
-                                           pt/transpose
-                                           (operator/add t)
-                                           pt/transpose)
+                                       :mu (-> M0_rotated
+                                               ;; conjugating with transpose
+                                               ;; to make broadcasting work
+                                               pt/transpose
+                                               (operator/add t)
+                                               pt/transpose)
                                        :rowcov (np/eye space-dimension)
                                        :colcov (pt/diag U)
-                                       :observed (-> (structures 1)
-                                                     tensor2d->np-matrix))
+                                       :observed (np-structures 1))
+                   M0_adapted (pm/Deterministic "M0_adapted"
+                                                (-> (pt/dot R M0)
+                                                    pt/transpose
+                                                    (operator/add t)
+                                                    pt/transpose))
+                   X1_adapted (pm/Deterministic "X1_adapted"
+                                                (-> (pt/dot R X1)
+                                                    pt/transpose
+                                                    (operator/add t)
+                                                    pt/transpose))
+                   prot1_adapted (pm/Deterministic "prot1_adapted"
+                                                   (-> (np-structures 0)
+                                                       (->> (pt/dot R))
+                                                       pt/transpose
+                                                       (operator/add t)
+                                                       pt/transpose))
                    prior-predictive-samples (pm/sample_prior_predictive)
-                   samples (pm/sample :chains 2
-                                      :draws 100
-                                      :tune 100)
+                   idata (pm/sample :chains 2
+                                    :draws 200
+                                    :tune 200)
                    posterior-predictive-samples (pm/sample_posterior_predictive
-                                                 samples)]
-               {:prior-predictive-samples prior-predictive-samples
+                                                 idata)]
+               {:structures structures
+                :prior-predictive-samples prior-predictive-samples
                 :posterior-predictive-samples posterior-predictive-samples
-                :samples samples}))))
+                :idata idata}))))
 
 
 
@@ -375,74 +384,132 @@
         dtype/->double-array
         (tensor/reshape (np/shape np-array)))))
 
-(-> results
-    :samples
-    (py.- posterior)
-    (py.- u)
-    py-array->clj
-    first
-    xyz-tensor->dataset
-    ((fn [dataset]
-       (kind/hiccup
-        ['(fn [{:keys [dataset index]}]
-            [plotly
-             {:data [(->> dataset
-                          (merge {:type :scatter3d
-                                  :mode :markers
-                                  :opacity 0.6
-                                  :marker {:size 4
-                                           :color index
-                                           :colorscale :Viridis}}))]}])
-         {:dataset (-> dataset
-                       (update-vals vec))
-          :index (-> dataset
-                     tc/row-count
-                     range
-                     vec)}]))))
-
-
-
 (let [posterior-predictives (-> results
                                 :posterior-predictive-samples
                                 (py.- posterior_predictive)
                                 ((juxt #(py.- % X1)
+                                       #(py.- % X1_adapted)
                                        #(py.- % X2))))
+      view-limit 6
       [n-chains n-samples _ _] (-> posterior-predictives
                                    first
                                    (py.- shape))]
-  (for [chain-idx (range n-chains)
-        sample-idx (range 0 n-samples (quot n-samples 5))]
-    (->> posterior-predictives
-         (map (fn [xarray]
-                (-> xarray
-                    (py. __getitem__ chain-idx)
-                    (py. __getitem__ sample-idx)
-                    np/array
-                    py-array->clj
-                    (tensor/transpose [1 0])
-                    xyz-tensor->dataset)))
-         compare-visually)))
+  (for [chain-idx [0] #_(range n-chains)
+        sample-idx (range 0 n-samples (quot n-samples 10))]
+    (kind/hiccup
+     [:div
+      (pr-str {:chain chain-idx
+               :sample sample-idx})
+      (->> posterior-predictives
+           (map (fn [xarray]
+                  (-> xarray
+                      (py. __getitem__ chain-idx)
+                      (py. __getitem__ sample-idx)
+                      np/array
+                      py-array->clj
+                      (tensor/transpose [1 0])
+                      xyz-tensor->dataset
+                      (tc/head view-limit))))
+           compare-visually)])))
+
+
+(kind/hiccup
+ ['(fn [{:keys [datasets]}]
+     [plotly
+      {:data (->> datasets
+                  (mapv (fn [dataset]
+                          (-> dataset
+                              (merge {:type :scatter3d
+                                      :mode :lines+markers
+                                      :opacity 0.3
+                                      :marker {:size 3
+                                               :color "grey"}})))))}])
+  {:datasets (-> results
+                 :idata
+                 (py.- posterior)
+                 (py.- M0_adapted)
+                 py-array->clj
+                 (tensor/transpose [0 1 3 2])
+                 (tensor/slice 2)
+                 (->> (map (fn [tensor]
+                             (-> tensor
+                                 xyz-tensor->dataset
+                                 (update-vals vec))))
+                      vec))}])
+
+
+(-> results
+    :idata
+    (py.- posterior)
+    (py.- prot1_adapted)
+    py-array->clj)
+
+(kind/hiccup
+ ['(fn [{:keys [prot1-adapted-datasets
+                prot2-dataset]}]
+     [plotly
+      {:data (->> prot1-adapted-datasets
+                  (map (fn [dataset]
+                         (-> dataset
+                             (merge {:type :scatter3d
+                                     :mode :lines+markers
+                                     :opacity 0.02
+                                     :marker {:size 3
+                                              :color "grey"}}))))
+                  (cons (-> prot2-dataset
+                            (merge {:type :scatter3d
+                                    :mode :lines+markers
+                                    :opacity 1
+                                    :marker {:size 3
+                                             :color "orange"}})))
+                  vec)}])
+  {:prot1-adapted-datasets (-> results
+                               :idata
+                               (py.- posterior)
+                               (py.- prot1_adapted)
+                               py-array->clj
+                               (tensor/transpose [0 1 3 2])
+                               (tensor/slice 2)
+                               (->> ;; (partition 19)
+                                ;; (map first)
+                                (map (fn [tensor]
+                                       (-> tensor
+                                           xyz-tensor->dataset)))
+                                (mapv #(update-vals % vec))))
+   :prot2-dataset (-> results
+                      :structures
+                      second
+                      (tensor/transpose [1 0])
+                      xyz-tensor->dataset
+                      (update-vals vec))}])
 
 
 
-
-(let [posteriors (-> results
-                     :samples
-                     (py.- posterior)
-                     ((juxt #(py.- % M0)
-                            #(py.- % M0_rotated))))
-      [n-chains n-samples _ _] (-> posteriors
-                                   first
-                                   (py.- shape))]
-  (for [chain-idx (range n-chains)
-        sample-idx (range 0 n-samples (quot n-samples 5))]
-    (->> posteriors
-         (map (fn [xarray]
-                (-> xarray
-                    (py. __getitem__ chain-idx)
-                    (py. __getitem__ sample-idx)
-                    np/array
-                    py-array->clj
-                    (tensor/transpose [1 0])
-                    xyz-tensor->dataset)))
-         compare-visually)))
+(-> results
+    :idata
+    (py.- posterior)
+    (py.- u)
+    (->> (mapv (fn [chain-posterior]
+                 (-> chain-posterior
+                     py-array->clj
+                     xyz-tensor->dataset
+                     ((fn [dataset]
+                        (kind/hiccup
+                         ['(fn [{:keys [dataset index]}]
+                             [plotly
+                              {:data [(->> dataset
+                                           (merge {:type :scatter3d
+                                                   :mode :markers
+                                                   :opacity 0.6
+                                                   :marker {:size 4
+                                                            :color index
+                                                            :colorscale :Viridis}}))]}])
+                          (let [index (-> dataset
+                                          tc/row-count
+                                          range
+                                          vec)]
+                            {:dataset (-> dataset
+                                          (tc/add-column
+                                           :i index)
+                                          (update-vals vec))
+                             :index index})]))))))))
