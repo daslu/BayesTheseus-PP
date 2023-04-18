@@ -11,7 +11,8 @@ import numpy as np
 from numpyro.compat.infer import Trace_ELBO
 from pandas import Series
 # Biopython
-from Bio import SeqRecord, Alphabet, SeqIO
+#from Bio import SeqRecord, Alphabet, SeqIO
+from Bio import SeqRecord, SeqIO
 from Bio.Seq import Seq
 import Bio.PDB as PDB
 from Bio.Seq import MutableSeq
