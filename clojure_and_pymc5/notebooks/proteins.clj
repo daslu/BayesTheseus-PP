@@ -44,6 +44,20 @@
 (def colon
   (python/slice nil nil))
 
+(defn py-array->clj [py-array]
+  (let [np-array (np/array py-array)]
+    (-> np-array
+        (py. flatten)
+        dtype/->double-array
+        (tensor/reshape (np/shape np-array)))))
+
+(defn prep-dataset-for-cljs
+  "Make sure a dataset can be serialized for cljs
+  by converting dtyp-next buffers into vectors."
+  [dataset]
+  (-> dataset
+      (update-vals vec)))
+
 (arviz.style/use "arviz-darkgrid")
 
 
@@ -160,7 +174,7 @@
                                                   :color index
                                                   :colorscale :Viridis}})))))}])
     {:datasets (->> xyz-datasets
-                    (mapv #(update-vals % vec)))
+                    (mapv prep-dataset-for-cljs))
      :index (-> xyz-datasets
                 first
                 tc/row-count
@@ -204,7 +218,7 @@
 
 
 
-(defn ->quaternion [u]
+(defn rotate-q [u]
   (let [theta1 (-> u
                    (brackets 1)
                    (operator/mul (* 2 Math/PI)))
@@ -264,6 +278,9 @@
                (pt/stack [R10 R11 R12])
                (pt/stack [R20 R21 R22])])))
 
+
+
+
 (py/with [model (pm/Model)]
          (let [x (pm/MatrixNormal "x"
                                   :mu (np/matrix [[0 1]
@@ -288,6 +305,54 @@
     tensor2d->np-matrix)
 
 
+
+
+
+(let [name1 "1d3z"
+      name2 "1ubq"
+      models [0 0]
+      samples 100
+      {:keys [obs obs-datasets]}
+      (read-data [name1 name2]
+                 {:models models
+                  ;; :limit 12
+                  })
+      structures (->> obs
+                      (mapv #(-> %
+                                 (tensor/transpose [1 0]))))
+      view-limit 999
+      tensor->cljs (fn [tensor]
+                     (-> tensor
+                         (tensor/transpose [1 0])
+                         xyz-tensor->dataset
+                         (tc/head 999)
+                         prep-dataset-for-cljs))]
+  (->> {:prot1-dataset  (-> structures
+                            first
+                            tensor->cljs)
+        :prot2-dataset (-> structures
+                           second
+                           tensor->cljs)}
+       (vector '(fn [{:keys [prot1-dataset
+                             prot2-dataset]}]
+                  [plotly
+                   {:data [(-> prot1-dataset
+                               (merge {:type :scatter3d
+                                       :mode :lines+markers
+                                       :opacity 1
+                                       :marker {:size 3
+                                                :color "purple"}}))
+                           (-> prot2-dataset
+                               (merge {:type :scatter3d
+                                       :mode :lines+markers
+                                       :opacity 1
+                                       :marker {:size 3
+                                                :color "orange"}}))]}]))
+       kind/hiccup))
+
+
+
+
 (def results
   (let [name1 "1d3z"
         name2 "1ubq"
@@ -296,8 +361,7 @@
         {:keys [obs obs-datasets]}
         (read-data [name1 name2]
                    {:models models
-                    ;; :limit 6
-                    })
+                    :limit 12})
         structures (->> obs
                         (mapv #(-> %
                                    (tensor/transpose [1 0]))))
@@ -319,11 +383,11 @@
                                         (operator/sub
                                          M
                                          (pt/mean M)))
-                   t (pm/Normal "t" :shape [space-dimension])
-                   u (pm/Uniform "u" :shape [space-dimension])
-                   R (pm/Deterministic "R" (->quaternion u))
+                   t (pm/Normal "t" :shape [space-dimension]) ; the shift
+                   u (pm/Uniform "u" :shape [space-dimension]) ; randomization of rotation
+                   R (pm/Deterministic "R" (rotate-q u)) ; the rotation matrix
                    U (pm/HalfNormal "U"
-                                    :sigma 0.01
+                                    :sigma 0.01 ; TODO: Consider some prior here
                                     :shape [n-residues])
                    M0_rotated (pm/Deterministic "M0_rotated"
                                                 (pt/dot R M0))
@@ -359,9 +423,9 @@
                                                        (operator/add t)
                                                        pt/transpose))
                    prior-predictive-samples (pm/sample_prior_predictive)
-                   idata (pm/sample :chains 2
+                   idata (pm/sample :chains 4
                                     :draws 200
-                                    :tune 200)
+                                    :tune 50)
                    posterior-predictive-samples (pm/sample_posterior_predictive
                                                  idata)]
                {:structures structures
@@ -371,18 +435,126 @@
 
 
 
-(-> results
-    :prior-predictive-samples
-    (py.- prior)
-    (py.- "M0")
-    np/mean) ; should be about zero
 
-(defn py-array->clj [py-array]
-  (let [np-array (np/array py-array)]
-    (-> np-array
-        (py. flatten)
-        dtype/->double-array
-        (tensor/reshape (np/shape np-array)))))
+(let [view-limit 12
+      tensor->cljs (fn [tensor aname]
+                     (-> tensor
+                         (tensor/transpose [1 0])
+                         xyz-tensor->dataset
+                         (tc/head view-limit)
+                         prep-dataset-for-cljs))
+      shape (-> results
+                :idata
+                (py.- posterior)
+                (py.- prot1_adapted)
+                np/shape)
+      n-chains (first shape)
+      n-samples (second shape)]
+  (->> {:prot1-adapted-datasets
+        (-> results
+            :idata
+            (py.- posterior)
+            (py.- prot1_adapted)
+            py-array->clj
+            (tensor/slice 1)
+            (->> (map-indexed
+                  (fn [chain-idx chain-tensor]
+                    (-> chain-tensor
+                        (tensor/slice 1)
+                        (->> (map #(tensor->cljs
+                                    %
+                                    (str "prot1-adapted-chain"
+                                         chain-idx)))))))
+                 (apply concat)
+                 vec))
+        :prot1-chain-idx (->> n-chains
+                              range
+                              (mapcat (fn [chain-idx]
+                                        (repeat n-samples chain-idx)))
+                              vec)
+        :prot2-dataset
+        (-> results
+            :structures
+            second
+            (tensor->cljs "prot2"))}
+       (vector '(fn [{:keys [prot1-adapted-datasets
+                             prot1-chain-idx
+                             prot2-dataset]}]
+                  [plotly
+                   {:data (->> prot1-adapted-datasets
+                               (map (fn [dataset]
+                                      (-> dataset
+                                          (merge {:type :scatter3d
+                                                  :mode :lines+markers
+                                                  :opacity 0.05
+                                                  :marker {:size 3
+                                                           :color
+                                                           (mapv
+                                                            ["blue"
+                                                             "yellow"
+                                                             "red"
+                                                             "green"]
+                                                            prot1-chain-idx)}}))))
+                               (cons (-> prot2-dataset
+                                         (merge {:type :scatter3d
+                                                 :mode :lines+markers
+                                                 :opacity 1
+                                                 :marker {:size 3
+                                                          :color "orange"}})))
+                               vec)}]))
+       kind/hiccup))
+
+
+
+
+
+
+
+
+(let [view-limit 12
+      tensor->cljs (fn [tensor]
+                     (-> tensor
+                         (tensor/transpose [1 0])
+                         xyz-tensor->dataset
+                         (tc/head view-limit)
+                         prep-dataset-for-cljs))]
+  (->> {:prot1-adapted-datasets (-> results
+                                    :idata
+                                    (py.- posterior)
+                                    (py.- prot1_adapted)
+                                    py-array->clj
+                                    (tensor/slice 2)
+                                    (->> ;; (partition 19)
+                                     ;; (map first)
+                                     (mapv tensor->cljs)))
+        :prot2-dataset (-> results
+                           :structures
+                           second
+                           tensor->cljs)}
+       (vector '(fn [{:keys [prot1-adapted-datasets
+                             prot2-dataset]}]
+                  [plotly
+                   {:data (->> prot1-adapted-datasets
+                               (map (fn [dataset]
+                                      (-> dataset
+                                          (merge {:type :scatter3d
+                                                  :mode :lines+markers
+                                                  :opacity 0.01
+                                                  :marker {:size 3
+                                                           :color "grey"}}))))
+                               (cons (-> prot2-dataset
+                                         (merge {:type :scatter3d
+                                                 :mode :lines+markers
+                                                 :opacity 1
+                                                 :marker {:size 3
+                                                          :color "orange"}})))
+                               vec)}]))
+       kind/hiccup))
+
+
+
+
+
 
 (let [posterior-predictives (-> results
                                 :posterior-predictive-samples
@@ -434,7 +606,7 @@
                  (->> (map (fn [tensor]
                              (-> tensor
                                  xyz-tensor->dataset
-                                 (update-vals vec))))
+                                 prep-dataset-for-cljs)))
                       vec))}])
 
 
@@ -443,46 +615,6 @@
     (py.- posterior)
     (py.- prot1_adapted)
     py-array->clj)
-
-(kind/hiccup
- ['(fn [{:keys [prot1-adapted-datasets
-                prot2-dataset]}]
-     [plotly
-      {:data (->> prot1-adapted-datasets
-                  (map (fn [dataset]
-                         (-> dataset
-                             (merge {:type :scatter3d
-                                     :mode :lines+markers
-                                     :opacity 0.02
-                                     :marker {:size 3
-                                              :color "grey"}}))))
-                  (cons (-> prot2-dataset
-                            (merge {:type :scatter3d
-                                    :mode :lines+markers
-                                    :opacity 1
-                                    :marker {:size 3
-                                             :color "orange"}})))
-                  vec)}])
-  {:prot1-adapted-datasets (-> results
-                               :idata
-                               (py.- posterior)
-                               (py.- prot1_adapted)
-                               py-array->clj
-                               (tensor/transpose [0 1 3 2])
-                               (tensor/slice 2)
-                               (->> ;; (partition 19)
-                                ;; (map first)
-                                (map (fn [tensor]
-                                       (-> tensor
-                                           xyz-tensor->dataset)))
-                                (mapv #(update-vals % vec))))
-   :prot2-dataset (-> results
-                      :structures
-                      second
-                      (tensor/transpose [1 0])
-                      xyz-tensor->dataset
-                      (update-vals vec))}])
-
 
 
 (-> results
@@ -511,5 +643,31 @@
                             {:dataset (-> dataset
                                           (tc/add-column
                                            :i index)
-                                          (update-vals vec))
+                                          prep-dataset-for-cljs)
                              :index index})]))))))))
+
+
+
+(-> results
+    :prior-predictive-samples
+    (py.- prior)
+    (py.- "M0")
+    np/mean) ; should be about zero
+
+
+
+
+
+;; some better prior for U?
+;; add a RMSE measure
+;; color the chains differently
+;; visualize varying variance:
+;;   by the tube's thickness
+;;   by color (blue/grey/red)
+;; contour plots -- need to understand
+;; use b-factor from the pdb file
+;; b/(2*PI) -> rms deviation
+
+
+
+:bye
