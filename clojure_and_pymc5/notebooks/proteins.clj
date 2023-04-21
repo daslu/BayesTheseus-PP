@@ -1,23 +1,22 @@
 (ns proteins
-  (:require
-   [scicloj.tempfiles.api :as tempfiles]
-   [tablecloth.api :as tc]
-   [fastmath.core :as math]
-   [fastmath.random :as random]
-   [tech.v3.datatype :as dtype]
-   [tech.v3.dataset :as dataset]
-   [tech.v3.dataset.tensor :as dataset.tensor]
-   [tech.v3.tensor :as tensor]
-   [tech.v3.datatype.functional :as fun]
-   [aerial.hanami.common :as hc]
-   [aerial.hanami.templates :as ht]
-   [scicloj.kindly.v3.kind :as kind]
-   [scicloj.kindly.v3.api :as kindly]
-   [scicloj.clay.v2.api :as clay]
-   [libpython-clj2.python :refer [py. py.. py.-] :as py]
-   [scicloj.noj.v1.vis :as vis]
-   [scicloj.noj.v1.vis.python :as vis.python]
-   [libpython-clj2.require :refer [require-python]])
+  (:require [scicloj.tempfiles.api :as tempfiles]
+            [tablecloth.api :as tc]
+            [fastmath.core :as math]
+            [fastmath.random :as random]
+            [tech.v3.datatype :as dtype]
+            [tech.v3.dataset :as dataset]
+            [tech.v3.dataset.tensor :as dataset.tensor]
+            [tech.v3.tensor :as tensor]
+            [tech.v3.datatype.functional :as fun]
+            [aerial.hanami.common :as hc]
+            [aerial.hanami.templates :as ht]
+            [scicloj.kindly.v3.kind :as kind]
+            [scicloj.kindly.v3.api :as kindly]
+            [scicloj.clay.v2.api :as clay]
+            [libpython-clj2.python :refer [py. py.. py.-] :as py]
+            [scicloj.noj.v1.vis :as vis]
+            [scicloj.noj.v1.vis.python :as vis.python]
+            [libpython-clj2.require :refer [require-python]])
   (:import java.lang.Math))
 
 ;; https://www.pymc.io/projects/docs/en/stable/learn/core_notebooks/pymc_overview.html
@@ -60,11 +59,88 @@
 
 (arviz.style/use "arviz-darkgrid")
 
+;; 1d3z
+;; 1ubq
+(def main-name1 "7ju5clean")
+(def main-name2 "AF-A0A024R7T2-F1-model_v4-clean")
+
+
+#_
+(->> (for [nam [main-name2]]
+       (let [protein-name nam
+             data-type :models
+             filepath (str "data/" protein-name ".pdb")
+             parser (Bio.PDB/PDBParser)
+             structure (py. parser get_structure protein-name filepath)]
+         (->> structure
+              (mapcat (fn [model]
+                        (->> model
+                             (mapcat (fn [chain]
+                                       (->> chain
+                                            (map (fn [residue]
+                                                   (try
+                                                     (-> residue
+                                                         (py. __getitem__ "CA")
+                                                         str)
+                                                     (catch Exception e
+                                                       nil))))))))))
+              frequencies))))
+
+(defn ->residue-type [residue]
+  (-> residue
+      str
+      (subs 9 12)))
+
+
+(def residues
+  (->> [main-name1 main-name2]
+       (mapv (fn [protein-name ]
+               (let [filepath (str "data/" protein-name ".pdb")
+                     parser (Bio.PDB/PDBParser)
+                     structure (py. parser get_structure protein-name filepath)]
+                 (->> structure
+                      first
+                      ((fn [model]
+                         (->> model
+                              (mapcat (fn [chain]
+                                        (->> chain
+                                             (map ->residue-type)))))))))))))
+
+(map count residues)
+
+
+(->> (residues 1)
+     (drop offset)
+     (apply map = (residues 0))
+     (filter identity)
+     count)
+
+(map vector
+     (drop 10 (residues 0))
+     (residues 1))
+
+(-> (for [offset0 (range 20)
+          offset1 (range 20)]
+      {:offset0 offset0
+       :offset1 offset1})
+    (->> (map (fn [{:keys [offset0 offset1]
+                    :as offsets}]
+                (assoc offsets
+                       :agreement (->> (map =
+                                            (->> (residues 0)
+                                                 (drop offset0))
+                                            (->> (residues 1)
+                                                 (drop offset1)))
+                                       (filter identity)
+                                       count)))))
+    tc/dataset
+    (tc/order-by [:agreement] :desc))
+
 
 (defn extract-coordinates-from-pdb
   ([protein-name]
    (extract-coordinates-from-pdb protein-name {}))
-  ([protein-name {:keys [data-type limit]
+  ([protein-name {:keys [data-type limit offset]
                   :or {data-type :models}}]
    (let [filepath (str "data/" protein-name ".pdb")
          parser (Bio.PDB/PDBParser)
@@ -82,10 +158,19 @@
                                                           (py. get_resname)
                                                           (Bio.PDB.Polypeptide/is_aa :standard true))))
                                             (map (fn [residue]
-                                                   (-> residue
-                                                       (brackets "CA")
-                                                       (py. get_coord)
-                                                       (->> (dtype/->array :float32))))))))
+                                                   (try
+                                                     (-> residue
+                                                         (brackets "CA")
+                                                         (py. get_coord)
+                                                         (->> (dtype/->array :float32)))
+                                                     (catch Exception e nil))))
+                                            (filter some?))))
+                                    ;; ((if (= protein-name main-name2)
+                                    ;;    (comp rest reverse) ;; NOTE THIS !!!!
+                                    ;;    identity))
+                                    ((if offset
+                                       (partial drop offset)
+                                       identity))
                                     ((if limit
                                        (partial take limit)
                                        identity)))))))
@@ -128,17 +213,21 @@
                  {:keys [data-type
                          models
                          rmsd?
-                         limit]
+                         limit
+                         offsets]
                   :or {data-type :models
-                       models [0 1]
+                       models [0 0]
+                       offsets [0 0]
                        rmsd true}}]
   (case data-type
-    :models (let [coords (map (fn [prot model]
+    :models (let [coords (map (fn [prot model offset]
                                 (-> prot
-                                    (extract-coordinates-from-pdb {:limit limit})
+                                    (extract-coordinates-from-pdb {:offset offset
+                                                                   :limit limit})
                                     (nth model)))
                               prots
-                              models)
+                              models
+                              offsets)
                   obs (->> coords
                            (mapv #(tensor/map-axis % center-1d 0)))
                   obs-datasets (->> obs
@@ -148,8 +237,9 @@
                :obs-datasets obs-datasets})))
 
 
-(let [name1 "1d3z"
-      name2 "1ubq"
+
+(let [name1 main-name1
+      name2 main-name2
       models [0 0]
       samples 100]
   (->> (read-data [name1 name2]
@@ -181,14 +271,15 @@
                 range
                 vec)}]))
 
-(let [name1 "1d3z"
-      name2 "1ubq"
+(let [name1 main-name1
+      name2 main-name2
       models [0 0]
+      offsets [10 0]
       {:keys [obs-datasets]} (read-data [name1 name2]
                                         {:models models
-                                         :limit 13})]
+                                         :offsets offsets
+                                         :limit 50})]
   (->> obs-datasets
-       #_(take 1)
        compare-visually))
 
 
@@ -308,60 +399,69 @@
 
 
 
-(let [name1 "1d3z"
-      name2 "1ubq"
+(let [name1 main-name1
+      name2 main-name2
       models [0 0]
-      samples 100
+      offsets [10 0]
       {:keys [obs obs-datasets]}
       (read-data [name1 name2]
                  {:models models
-                  ;; :limit 12
+                  :offsets offsets
+                  ;; :limit 50
                   })
       structures (->> obs
                       (mapv #(-> %
                                  (tensor/transpose [1 0]))))
-      view-limit 999
+      view-limit 50
       tensor->cljs (fn [tensor]
                      (-> tensor
                          (tensor/transpose [1 0])
                          xyz-tensor->dataset
-                         (tc/head 999)
+                         (tc/head view-limit)
                          prep-dataset-for-cljs))]
   (->> {:prot1-dataset  (-> structures
                             first
                             tensor->cljs)
         :prot2-dataset (-> structures
                            second
-                           tensor->cljs)}
+                           tensor->cljs)
+        :index (-> structures
+                   (->> (map dtype/shape))
+                   pr-str)}
        (vector '(fn [{:keys [prot1-dataset
-                             prot2-dataset]}]
-                  [plotly
-                   {:data [(-> prot1-dataset
-                               (merge {:type :scatter3d
-                                       :mode :lines+markers
-                                       :opacity 1
-                                       :marker {:size 3
-                                                :color "purple"}}))
-                           (-> prot2-dataset
-                               (merge {:type :scatter3d
-                                       :mode :lines+markers
-                                       :opacity 1
-                                       :marker {:size 3
-                                                :color "orange"}}))]}]))
+                             prot2-dataset
+                             index]}]
+                  [:div
+                   index
+                   [plotly
+                    {:data [(-> prot1-dataset
+                                (merge {:type :scatter3d
+                                        :mode :lines+markers
+                                        :opacity 1
+                                        :marker {:size 3
+                                                 :color "purple"}}))
+                            (-> prot2-dataset
+                                (merge {:type :scatter3d
+                                        :mode :lines+markers
+                                        :opacity 1
+                                        :marker {:size 3
+                                                 :color "orange"}}))]}]]))
        kind/hiccup))
 
 
 
 
 (def results
-  (let [name1 "1d3z"
-        name2 "1ubq"
+  (let [name1 main-name1
+        name2 main-name2
         models [0 0]
+        offsets [10 0]
         samples 100
         {:keys [obs obs-datasets]}
         (read-data [name1 name2]
                    {:models models
-                    :limit 12})
+                    :offsets offsets
+                    :limit 100})
         structures (->> obs
                         (mapv #(-> %
                                    (tensor/transpose [1 0]))))
@@ -423,9 +523,9 @@
                                                        (operator/add t)
                                                        pt/transpose))
                    prior-predictive-samples (pm/sample_prior_predictive)
-                   idata (pm/sample :chains 4
-                                    :draws 200
-                                    :tune 50)
+                   idata (pm/sample :chains 1
+                                    :draws 500
+                                    :tune 500)
                    posterior-predictive-samples (pm/sample_posterior_predictive
                                                  idata)]
                {:structures structures
@@ -436,7 +536,7 @@
 
 
 
-(let [view-limit 12
+(let [view-limit 100
       tensor->cljs (fn [tensor aname]
                      (-> tensor
                          (tensor/transpose [1 0])
