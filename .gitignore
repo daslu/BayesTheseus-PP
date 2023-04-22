@@ -8,6 +8,5 @@
 *.pdb
 *.txt
 DistancesCheckpoint*
-*.md
 *.pyc
 
