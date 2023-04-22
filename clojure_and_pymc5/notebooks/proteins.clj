@@ -1,6 +1,5 @@
 (ns proteins
-  (:require [scicloj.tempfiles.api :as tempfiles]
-            [tablecloth.api :as tc]
+  (:require [tablecloth.api :as tc]
             [fastmath.core :as math]
             [fastmath.random :as random]
             [tech.v3.datatype :as dtype]
@@ -16,7 +15,8 @@
             [libpython-clj2.python :refer [py. py.. py.-] :as py]
             [scicloj.noj.v1.vis :as vis]
             [scicloj.noj.v1.vis.python :as vis.python]
-            [libpython-clj2.require :refer [require-python]])
+            [libpython-clj2.require :refer [require-python]]
+            [util])
   (:import java.lang.Math))
 
 ;; https://www.pymc.io/projects/docs/en/stable/learn/core_notebooks/pymc_overview.html
@@ -37,60 +37,32 @@
                 '[pytensor.tensor :as pt]
                 '[math])
 
-(defn brackets [obj entry]
-  (py. obj __getitem__ entry))
-
-(def colon
-  (python/slice nil nil))
-
-(defn py-array->clj [py-array]
-  (let [np-array (np/array py-array)]
-    (-> np-array
-        (py. flatten)
-        dtype/->double-array
-        (tensor/reshape (np/shape np-array)))))
-
-(defn prep-dataset-for-cljs
-  "Make sure a dataset can be serialized for cljs
-  by converting dtyp-next buffers into vectors."
-  [dataset]
-  (-> dataset
-      (update-vals vec)))
-
-(arviz.style/use "arviz-darkgrid")
-
 ;; 1d3z
 ;; 1ubq
 (def main-name1 "7ju5clean")
 (def main-name2 "AF-A0A024R7T2-F1-model_v4-clean")
 
+(->> [main-name1 main-name2]
+     (mapv (fn [protein-name ]
+             (let [filepath (str "data/" protein-name ".pdb")
+                   parser (Bio.PDB/PDBParser)
+                   structure (py. parser get_structure protein-name filepath)]
+               (->> structure
+                    first
+                    ((fn [model]
+                       (->> model
+                            (mapcat (fn [chain]
+                                      (->> chain
+                                           (map (fn [residue]
+                                                  (-> residue
+                                                      (py. get_resname)))))))))))))))
 
-#_
-(->> (for [nam [main-name2]]
-       (let [protein-name nam
-             data-type :models
-             filepath (str "data/" protein-name ".pdb")
-             parser (Bio.PDB/PDBParser)
-             structure (py. parser get_structure protein-name filepath)]
-         (->> structure
-              (mapcat (fn [model]
-                        (->> model
-                             (mapcat (fn [chain]
-                                       (->> chain
-                                            (map (fn [residue]
-                                                   (try
-                                                     (-> residue
-                                                         (py. __getitem__ "CA")
-                                                         str)
-                                                     (catch Exception e
-                                                       nil))))))))))
-              frequencies))))
+
 
 (defn ->residue-type [residue]
   (-> residue
       str
       (subs 9 12)))
-
 
 (def residues
   (->> [main-name1 main-name2]
@@ -104,20 +76,10 @@
                          (->> model
                               (mapcat (fn [chain]
                                         (->> chain
-                                             (map ->residue-type)))))))))))))
+                                             (map #(py. % get_resname))))))))))))))
 
 (map count residues)
 
-
-(->> (residues 1)
-     (drop offset)
-     (apply map = (residues 0))
-     (filter identity)
-     count)
-
-(map vector
-     (drop 10 (residues 0))
-     (residues 1))
 
 (-> (for [offset0 (range 20)
           offset1 (range 20)]
@@ -160,7 +122,7 @@
                                             (map (fn [residue]
                                                    (try
                                                      (-> residue
-                                                         (brackets "CA")
+                                                         (util/brackets "CA")
                                                          (py. get_coord)
                                                          (->> (dtype/->array :float32)))
                                                      (catch Exception e nil))))
@@ -264,7 +226,7 @@
                                                   :color index
                                                   :colorscale :Viridis}})))))}])
     {:datasets (->> xyz-datasets
-                    (mapv prep-dataset-for-cljs))
+                    (mapv util/prep-dataset-for-cljs))
      :index (-> xyz-datasets
                 first
                 tc/row-count
@@ -311,17 +273,17 @@
 
 (defn rotate-q [u]
   (let [theta1 (-> u
-                   (brackets 1)
+                   (util/brackets 1)
                    (operator/mul (* 2 Math/PI)))
         theta2 (-> u
-                   (brackets 2)
+                   (util/brackets 2)
                    (operator/mul (* 2 Math/PI)))
         r1 (-> u
-               (brackets 0)
+               (util/brackets 0)
                (->> (operator/sub 1))
                pt/sqrt)
         r2 (-> u
-               (brackets 0)
+               (util/brackets 0)
                pt/sqrt)
         w (-> theta2
               (pt/cos)
@@ -418,7 +380,7 @@
                          (tensor/transpose [1 0])
                          xyz-tensor->dataset
                          (tc/head view-limit)
-                         prep-dataset-for-cljs))]
+                         util/prep-dataset-for-cljs))]
   (->> {:prot1-dataset  (-> structures
                             first
                             tensor->cljs)
@@ -542,7 +504,7 @@
                          (tensor/transpose [1 0])
                          xyz-tensor->dataset
                          (tc/head view-limit)
-                         prep-dataset-for-cljs))
+                         util/prep-dataset-for-cljs))
       shape (-> results
                 :idata
                 (py.- posterior)
@@ -555,7 +517,7 @@
             :idata
             (py.- posterior)
             (py.- prot1_adapted)
-            py-array->clj
+            util/py-array->clj
             (tensor/slice 1)
             (->> (map-indexed
                   (fn [chain-idx chain-tensor]
@@ -617,12 +579,12 @@
                          (tensor/transpose [1 0])
                          xyz-tensor->dataset
                          (tc/head view-limit)
-                         prep-dataset-for-cljs))]
+                         util/prep-dataset-for-cljs))]
   (->> {:prot1-adapted-datasets (-> results
                                     :idata
                                     (py.- posterior)
                                     (py.- prot1_adapted)
-                                    py-array->clj
+                                    util/py-array->clj
                                     (tensor/slice 2)
                                     (->> ;; (partition 19)
                                      ;; (map first)
@@ -678,7 +640,7 @@
                       (py. __getitem__ chain-idx)
                       (py. __getitem__ sample-idx)
                       np/array
-                      py-array->clj
+                      util/py-array->clj
                       (tensor/transpose [1 0])
                       xyz-tensor->dataset
                       (tc/head view-limit))))
@@ -700,13 +662,13 @@
                  :idata
                  (py.- posterior)
                  (py.- M0_adapted)
-                 py-array->clj
+                 util/py-array->clj
                  (tensor/transpose [0 1 3 2])
                  (tensor/slice 2)
                  (->> (map (fn [tensor]
                              (-> tensor
                                  xyz-tensor->dataset
-                                 prep-dataset-for-cljs)))
+                                 util/prep-dataset-for-cljs)))
                       vec))}])
 
 
@@ -714,7 +676,7 @@
     :idata
     (py.- posterior)
     (py.- prot1_adapted)
-    py-array->clj)
+    util/py-array->clj)
 
 
 (-> results
@@ -723,7 +685,7 @@
     (py.- u)
     (->> (mapv (fn [chain-posterior]
                  (-> chain-posterior
-                     py-array->clj
+                     util/py-array->clj
                      xyz-tensor->dataset
                      ((fn [dataset]
                         (kind/hiccup
@@ -743,7 +705,7 @@
                             {:dataset (-> dataset
                                           (tc/add-column
                                            :i index)
-                                          prep-dataset-for-cljs)
+                                          util/prep-dataset-for-cljs)
                              :index index})]))))))))
 
 
