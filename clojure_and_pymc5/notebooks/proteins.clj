@@ -4,7 +4,6 @@
             [fastmath.random :as random]
             [tech.v3.datatype :as dtype]
             [tech.v3.dataset :as dataset]
-            [tech.v3.dataset.tensor :as dataset.tensor]
             [tech.v3.tensor :as tensor]
             [tech.v3.datatype.functional :as fun]
             [aerial.hanami.common :as hc]
@@ -18,8 +17,6 @@
             [libpython-clj2.require :refer [require-python]]
             [util])
   (:import java.lang.Math))
-
-;; https://www.pymc.io/projects/docs/en/stable/learn/core_notebooks/pymc_overview.html
 
 (require-python '[builtins :as python]
                 'operator
@@ -37,39 +34,8 @@
                 '[pytensor.tensor :as pt]
                 '[math])
 
-;; 1d3z
-;; 1ubq
-(def prot-name1 "7ju5clean")
-(def prot-name2 "AF-A0A024R7T2-F1-model_v4-clean")
-
-(->> [prot-name1 prot-name2]
-     (mapv (fn [protein-name ]
-             (let [filepath (str "data/" protein-name ".pdb")
-                   parser (Bio.PDB/PDBParser)
-                   structure (py. parser get_structure protein-name filepath)]
-               (->> structure
-                    first
-                    ((fn [model]
-                       (->> model
-                            (mapcat (fn [chain]
-                                      (->> chain
-                                           (map (fn [residue]
-                                                  {:id (-> residue
-                                                           (py. get_id)
-                                                           second)
-                                                   :name (-> residue
-                                                             (py. get_resname))
-                                                   :ca-coordinates (try
-                                                                     (-> residue
-                                                                         (util/brackets "CA")
-                                                                         (py. get_coord)
-                                                                         (->> (dtype/->array :float32)))
-                                                                     (catch Exception e nil))})))))))))))))
-
-
-
-
-
+(def protein-name1 "7ju5clean")
+(def protein-name2 "AF-A0A024R7T2-F1-model_v4-clean")
 
 (defn extract-coordinates-from-pdb
   ([protein-name]
@@ -102,30 +68,26 @@
                              (filter :ca-coordinates))))
                      tc/dataset))))))))
 
-(comment
-  (-> prot-name2
-      extract-coordinates-from-pdb))
+
+(-> protein-name1
+    extract-coordinates-from-pdb
+    ;; for readability of output:
+    (tc/update-columns [:ca-coordinates]
+                       (partial map vec)))
 
 (defn center-1d [xs]
   (fun/- xs
-         (fun/mean xs
-                   )))
+         (fun/mean xs)))
 
 (defn center-columns [xyzs]
   (-> xyzs
       (tensor/map-axis center-1d 0)))
 
-(defn xyz-tensor->dataset [tensor]
-  (-> tensor
-      dataset.tensor/tensor->dataset
-      (tc/rename-columns [:x :y :z])))
-
-
 (defn read-data
   ([prots]
    (read-data prots nil))
   ([prots {:keys [limit]}]
-   (let [prots [prot-name1 prot-name2]
+   (let [prots [protein-name1 protein-name2]
          [dataset1 dataset2] (->> prots
                                   (map extract-coordinates-from-pdb))
          joined-dataset (-> (tc/inner-join dataset1 dataset2 :id)
@@ -140,51 +102,20 @@
          obs (->> coords
                   (mapv #(tensor/map-axis % center-1d 0)))
          obs-datasets (->> obs
-                           (mapv xyz-tensor->dataset))]
+                           (mapv util/xyz-tensor->dataset))]
      {:coords coords
       :obs obs
       :obs-datasets obs-datasets})))
 
 
-(-> [prot-name1 prot-name2]
-    read-data
-    :obs-datasets
-    (->> (map tc/info)))
+(-> [protein-name1 protein-name2]
+    (read-data {:limit 4})
+    :obs-datasets)
 
 
-(-> [prot-name1 prot-name2]
-    (read-data {:limit 9})
-    :obs-datasets
-    (->> (map tc/info)))
+;; Compare the datasets visually
 
-(defn compare-visually [xyz-datasets]
-  (kind/hiccup
-   ['(fn [{:keys [datasets index]}]
-       [plotly
-        {:data (->> datasets
-                    (mapv (fn [dataset]
-                            (->> dataset
-                                 (merge {:type :scatter3d
-                                         :mode :lines+markers
-                                         :opacity 0.5
-                                         :line {:width 5}
-                                         :marker {:size 4
-                                                  :color index
-                                                  :colorscale :Viridis}})))))}])
-    {:datasets (->> xyz-datasets
-                    (mapv util/prep-dataset-for-cljs))
-     :index (-> xyz-datasets
-                first
-                tc/row-count
-                range
-                vec)}]))
-
-(-> [prot-name1 prot-name2]
-    (read-data {:limit 50})
-    :obs-datasets
-    compare-visually)
-
-(let [{:keys [obs obs-datasets]} (-> [prot-name1 prot-name2]
+(let [{:keys [obs obs-datasets]} (-> [protein-name1 protein-name2]
                                      read-data)
       structures (->> obs
                       (mapv #(-> %
@@ -193,7 +124,7 @@
       tensor->cljs (fn [tensor]
                      (-> tensor
                          (tensor/transpose [1 0])
-                         xyz-tensor->dataset
+                         util/xyz-tensor->dataset
                          (tc/head view-limit)
                          util/prep-dataset-for-cljs))]
   (->> {:prot1-dataset  (-> structures
@@ -218,32 +149,6 @@
                                        :marker {:size 3
                                                 :color "orange"}}))]}]))
        kind/hiccup))
-
-
-;; (defn ->max-distance-to-origin [centered-structure]
-;;   (-> centered-structure
-;;       fun/sq
-;;       (tensor/reduce-axis fun/sum 1)
-;;       fun/sqrt
-;;       fun/reduce-max))
-
-;; (defn ->average-structure [centered-structures]
-;;   (-> centered-structures
-;;       (->> (apply fun/+))
-;;       (fun// (count centered-structures))))
-
-
-;; trying PyTensor
-;; https://www.pymc.io/projects/docs/en/stable/learn/core_notebooks/pymc_pytensor.html
-#_(let [x (pt/scalar :name "x")
-        y (pt/scalar :name "y")
-        z (operator/add x y)
-        w (pt/mul z 2)
-        f (pytensor/function :inputs [x y]
-                             :outputs w)]
-    (f :x 10
-       :y 5))
-
 
 
 (defn rotate-q [u]
@@ -307,29 +212,11 @@
                (pt/stack [R20 R21 R22])])))
 
 
-
-#_(py/with [model (pm/Model)]
-           (let [x (pm/MatrixNormal "x"
-                                    :mu (np/matrix [[0 1]
-                                                    [3 4]])
-                                    :colcov (np/matrix [[1 0]
-                                                        [0 4]])
-                                    :rowcov (np/matrix [[1 0]
-                                                        [0 4]]))
-                 samples (pm/sample_prior_predictive)]
-             samples))
-
-
-
-
-
-
-
 (def model
   (memoize
    (fn [{:keys [residues-limit tune]}]
      (let [{:keys [obs obs-datasets]}
-           (read-data [prot-name1 prot-name2]
+           (read-data [protein-name1 protein-name2]
                       {:limit residues-limit})
            structures (->> obs
                            (mapv #(-> %
@@ -401,14 +288,17 @@
                    :idata idata}))))))
 
 
+(model {:residues-limit 100 :tune 15})
+
+
 (defn show-results [results {:keys [view-limit]}]
   (let [tensor->cljs (fn [tensor aname]
                        (-> tensor
                            (tensor/transpose [1 0])
-                           xyz-tensor->dataset
+                           util/xyz-tensor->dataset
                            (tc/head view-limit)
                            util/prep-dataset-for-cljs))
-        shape (-> results-10-50
+        shape (-> results
                   :idata
                   (py.- posterior)
                   (py.- prot1_adapted)
@@ -469,18 +359,15 @@
                                  vec)}]))
          kind/hiccup)))
 
+
 (-> {:residues-limit 100 :tune 200}
     model
     (show-results {:view-limit 50}))
 
 
-
-
-
 (-> {:residues-limit 100 :tune 50}
     model
     (show-results {:view-limit 50}))
-
 
 
 (-> {:residues-limit 100 :tune 15}
@@ -499,7 +386,7 @@
       tensor->cljs (fn [tensor]
                      (-> tensor
                          (tensor/transpose [1 0])
-                         xyz-tensor->dataset
+                         util/xyz-tensor->dataset
                          (tc/head view-limit)
                          util/prep-dataset-for-cljs))]
   (->> {:prot1-adapted-datasets (-> results
@@ -564,7 +451,7 @@
                       np/array
                       util/py-array->clj
                       (tensor/transpose [1 0])
-                      xyz-tensor->dataset
+                      util/xyz-tensor->dataset
                       (tc/head view-limit))))
            compare-visually)])))
 
@@ -589,7 +476,7 @@
                  (tensor/slice 2)
                  (->> (map (fn [tensor]
                              (-> tensor
-                                 xyz-tensor->dataset
+                                 util/xyz-tensor->dataset
                                  util/prep-dataset-for-cljs)))
                       vec))}])
 
@@ -608,7 +495,7 @@
     (->> (mapv (fn [chain-posterior]
                  (-> chain-posterior
                      util/py-array->clj
-                     xyz-tensor->dataset
+                     util/xyz-tensor->dataset
                      ((fn [dataset]
                         (kind/hiccup
                          ['(fn [{:keys [dataset index]}]

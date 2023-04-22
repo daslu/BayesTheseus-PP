@@ -2,7 +2,9 @@
   (:require [libpython-clj2.python :refer [py. py.. py.-] :as py]
             [libpython-clj2.require :refer [require-python]]
             [tech.v3.datatype :as dtype]
-            [tech.v3.tensor :as tensor]))
+            [tech.v3.tensor :as tensor]
+            [tech.v3.dataset.tensor :as dataset.tensor]
+            [tablecloth.api :as tc]))
 
 (require-python '[builtins :as python]
                 '[numpy :as np])
@@ -26,6 +28,11 @@
   [dataset]
   (-> dataset
       (update-vals vec)))
+
+(defn xyz-tensor->dataset [tensor]
+  (-> tensor
+      dataset.tensor/tensor->dataset
+      (tc/rename-columns [:x :y :z])))
 
 (defn tensor2d->np-matrix [tensor]
   (->> tensor
