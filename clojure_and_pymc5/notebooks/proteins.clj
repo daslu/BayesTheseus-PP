@@ -39,10 +39,10 @@
 
 ;; 1d3z
 ;; 1ubq
-(def main-name1 "7ju5clean")
-(def main-name2 "AF-A0A024R7T2-F1-model_v4-clean")
+(def prot-name1 "7ju5clean")
+(def prot-name2 "AF-A0A024R7T2-F1-model_v4-clean")
 
-(->> [main-name1 main-name2]
+(->> [prot-name1 prot-name2]
      (mapv (fn [protein-name ]
              (let [filepath (str "data/" protein-name ".pdb")
                    parser (Bio.PDB/PDBParser)
@@ -54,162 +54,108 @@
                             (mapcat (fn [chain]
                                       (->> chain
                                            (map (fn [residue]
-                                                  (-> residue
-                                                      (py. get_resname)))))))))))))))
+                                                  {:id (-> residue
+                                                           (py. get_id)
+                                                           second)
+                                                   :name (-> residue
+                                                             (py. get_resname))
+                                                   :ca-coordinates (try
+                                                                     (-> residue
+                                                                         (util/brackets "CA")
+                                                                         (py. get_coord)
+                                                                         (->> (dtype/->array :float32)))
+                                                                     (catch Exception e nil))})))))))))))))
 
 
 
-(defn ->residue-type [residue]
-  (-> residue
-      str
-      (subs 9 12)))
 
-(def residues
-  (->> [main-name1 main-name2]
-       (mapv (fn [protein-name ]
-               (let [filepath (str "data/" protein-name ".pdb")
-                     parser (Bio.PDB/PDBParser)
-                     structure (py. parser get_structure protein-name filepath)]
-                 (->> structure
-                      first
-                      ((fn [model]
-                         (->> model
-                              (mapcat (fn [chain]
-                                        (->> chain
-                                             (map #(py. % get_resname))))))))))))))
-
-(map count residues)
-
-
-(-> (for [offset0 (range 20)
-          offset1 (range 20)]
-      {:offset0 offset0
-       :offset1 offset1})
-    (->> (map (fn [{:keys [offset0 offset1]
-                    :as offsets}]
-                (assoc offsets
-                       :agreement (->> (map =
-                                            (->> (residues 0)
-                                                 (drop offset0))
-                                            (->> (residues 1)
-                                                 (drop offset1)))
-                                       (filter identity)
-                                       count)))))
-    tc/dataset
-    (tc/order-by [:agreement] :desc))
 
 
 (defn extract-coordinates-from-pdb
   ([protein-name]
-   (extract-coordinates-from-pdb protein-name {}))
-  ([protein-name {:keys [data-type limit offset]
-                  :or {data-type :models}}]
    (let [filepath (str "data/" protein-name ".pdb")
          parser (Bio.PDB/PDBParser)
          structure (py. parser get_structure protein-name filepath)]
-     (case data-type
-       :models (-> structure
-                   (->> (map
-                         (fn [model]
-                           (-> model
-                               (->> (mapcat
-                                     (fn [chain]
-                                       (->> chain
-                                            (filter (fn [residue]
-                                                      (-> residue
-                                                          (py. get_resname)
-                                                          (Bio.PDB.Polypeptide/is_aa :standard true))))
-                                            (map (fn [residue]
-                                                   (try
-                                                     (-> residue
-                                                         (util/brackets "CA")
-                                                         (py. get_coord)
-                                                         (->> (dtype/->array :float32)))
-                                                     (catch Exception e nil))))
-                                            (filter some?))))
-                                    ;; ((if (= protein-name main-name2)
-                                    ;;    (comp rest reverse) ;; NOTE THIS !!!!
-                                    ;;    identity))
-                                    ((if offset
-                                       (partial drop offset)
-                                       identity))
-                                    ((if limit
-                                       (partial take limit)
-                                       identity)))))))
-                   (tensor/->tensor :datatype :float32))))))
+     (-> structure
+         first
+         ((fn [model]
+            (-> model
+                (->> (mapcat
+                      (fn [chain]
+                        (->> chain
+                             (filter (fn [residue]
+                                       (-> residue
+                                           (py. get_resname)
+                                           (Bio.PDB.Polypeptide/is_aa :standard true))))
+                             (map (fn [residue]
+                                    {:id (-> residue
+                                             (py. get_id)
+                                             second)
+                                     :name (-> residue
+                                               (py. get_resname))
+                                     :ca-coordinates (try
+                                                       (-> residue
+                                                           (util/brackets "CA")
+                                                           (py. get_coord)
+                                                           (->> (dtype/->array :float32)))
+                                                       (catch Exception e nil))}))
+                             (filter :ca-coordinates))))
+                     tc/dataset))))))))
 
 (comment
-  (-> "1d3z"
-      extract-coordinates-from-pdb)
-
-  (-> "1d3z"
-      (extract-coordinates-from-pdb {:limit 4})))
+  (-> prot-name2
+      extract-coordinates-from-pdb))
 
 (defn center-1d [xs]
   (fun/- xs
-         (fun/mean xs)))
+         (fun/mean xs
+                   )))
 
 (defn center-columns [xyzs]
   (-> xyzs
       (tensor/map-axis center-1d 0)))
-
-(comment
-  (-> [[1 2 3]
-       [4 5 9]]
-      tensor/->tensor
-      center-columns))
-
-(defn center-columns [xyzs]
-  (-> xyzs
-      (tensor/map-axis center-1d 0)))
-
 
 (defn xyz-tensor->dataset [tensor]
   (-> tensor
       dataset.tensor/tensor->dataset
-      (tc/rename-columns [:x :y :z])
-      #_(tc/add-column :i (fn [ds]
-                            (-> ds tc/row-count range)))))
-
-(defn read-data [prots
-                 {:keys [data-type
-                         models
-                         rmsd?
-                         limit
-                         offsets]
-                  :or {data-type :models
-                       models [0 0]
-                       offsets [0 0]
-                       rmsd true}}]
-  (case data-type
-    :models (let [coords (map (fn [prot model offset]
-                                (-> prot
-                                    (extract-coordinates-from-pdb {:offset offset
-                                                                   :limit limit})
-                                    (nth model)))
-                              prots
-                              models
-                              offsets)
-                  obs (->> coords
-                           (mapv #(tensor/map-axis % center-1d 0)))
-                  obs-datasets (->> obs
-                                    (mapv xyz-tensor->dataset))]
-              {:coords coords
-               :obs obs
-               :obs-datasets obs-datasets})))
+      (tc/rename-columns [:x :y :z])))
 
 
+(defn read-data
+  ([prots]
+   (read-data prots nil))
+  ([prots {:keys [limit]}]
+   (let [prots [prot-name1 prot-name2]
+         [dataset1 dataset2] (->> prots
+                                  (map extract-coordinates-from-pdb))
+         joined-dataset (-> (tc/inner-join dataset1 dataset2 :id)
+                            ((if limit
+                               #(tc/head % limit)
+                               identity)))
+         coords (->> [:ca-coordinates :right.ca-coordinates]
+                     (map (fn [colname]
+                            (-> colname
+                                joined-dataset
+                                tensor/->tensor))))
+         obs (->> coords
+                  (mapv #(tensor/map-axis % center-1d 0)))
+         obs-datasets (->> obs
+                           (mapv xyz-tensor->dataset))]
+     {:coords coords
+      :obs obs
+      :obs-datasets obs-datasets})))
 
-(let [name1 main-name1
-      name2 main-name2
-      models [0 0]
-      samples 100]
-  (->> (read-data [name1 name2]
-                  {:models models})
-       :obs-datasets
-       (map tc/info)))
+
+(-> [prot-name1 prot-name2]
+    read-data
+    :obs-datasets
+    (->> (map tc/info)))
 
 
+(-> [prot-name1 prot-name2]
+    (read-data {:limit 9})
+    :obs-datasets
+    (->> (map tc/info)))
 
 (defn compare-visually [xyz-datasets]
   (kind/hiccup
@@ -233,41 +179,70 @@
                 range
                 vec)}]))
 
-(let [name1 main-name1
-      name2 main-name2
-      models [0 0]
-      offsets [10 0]
-      {:keys [obs-datasets]} (read-data [name1 name2]
-                                        {:models models
-                                         :offsets offsets
-                                         :limit 50})]
-  (->> obs-datasets
-       compare-visually))
+(-> [prot-name1 prot-name2]
+    (read-data {:limit 50})
+    :obs-datasets
+    compare-visually)
+
+(let [{:keys [obs obs-datasets]} (-> [prot-name1 prot-name2]
+                                     read-data)
+      structures (->> obs
+                      (mapv #(-> %
+                                 (tensor/transpose [1 0]))))
+      view-limit 50
+      tensor->cljs (fn [tensor]
+                     (-> tensor
+                         (tensor/transpose [1 0])
+                         xyz-tensor->dataset
+                         (tc/head view-limit)
+                         util/prep-dataset-for-cljs))]
+  (->> {:prot1-dataset  (-> structures
+                            first
+                            tensor->cljs)
+        :prot2-dataset (-> structures
+                           second
+                           tensor->cljs)}
+       (vector '(fn [{:keys [prot1-dataset
+                             prot2-dataset]}]
+                  [plotly
+                   {:data [(-> prot1-dataset
+                               (merge {:type :scatter3d
+                                       :mode :lines+markers
+                                       :opacity 1
+                                       :marker {:size 3
+                                                :color "purple"}}))
+                           (-> prot2-dataset
+                               (merge {:type :scatter3d
+                                       :mode :lines+markers
+                                       :opacity 1
+                                       :marker {:size 3
+                                                :color "orange"}}))]}]))
+       kind/hiccup))
 
 
-(defn ->max-distance-to-origin [centered-structure]
-  (-> centered-structure
-      fun/sq
-      (tensor/reduce-axis fun/sum 1)
-      fun/sqrt
-      fun/reduce-max))
+;; (defn ->max-distance-to-origin [centered-structure]
+;;   (-> centered-structure
+;;       fun/sq
+;;       (tensor/reduce-axis fun/sum 1)
+;;       fun/sqrt
+;;       fun/reduce-max))
 
-(defn ->average-structure [centered-structures]
-  (-> centered-structures
-      (->> (apply fun/+))
-      (fun// (count centered-structures))))
+;; (defn ->average-structure [centered-structures]
+;;   (-> centered-structures
+;;       (->> (apply fun/+))
+;;       (fun// (count centered-structures))))
 
 
 ;; trying PyTensor
 ;; https://www.pymc.io/projects/docs/en/stable/learn/core_notebooks/pymc_pytensor.html
-(let [x (pt/scalar :name "x")
-      y (pt/scalar :name "y")
-      z (operator/add x y)
-      w (pt/mul z 2)
-      f (pytensor/function :inputs [x y]
-                           :outputs w)]
-  (f :x 10
-     :y 5))
+#_(let [x (pt/scalar :name "x")
+        y (pt/scalar :name "y")
+        z (operator/add x y)
+        w (pt/mul z 2)
+        f (pytensor/function :inputs [x y]
+                             :outputs w)]
+    (f :x 10
+       :y 5))
 
 
 
@@ -333,244 +308,191 @@
 
 
 
-
-(py/with [model (pm/Model)]
-         (let [x (pm/MatrixNormal "x"
-                                  :mu (np/matrix [[0 1]
-                                                  [3 4]])
-                                  :colcov (np/matrix [[1 0]
-                                                      [0 4]])
-                                  :rowcov (np/matrix [[1 0]
-                                                      [0 4]]))
-               samples (pm/sample_prior_predictive)]
-           samples))
-
-(defn tensor2d->np-matrix [tensor]
-  (->> tensor
-       (map np/array)
-       python/list
-       np/matrix))
-
-
-(-> [[1 2]
-     [3 4]]
-    tensor/->tensor
-    tensor2d->np-matrix)
+#_(py/with [model (pm/Model)]
+           (let [x (pm/MatrixNormal "x"
+                                    :mu (np/matrix [[0 1]
+                                                    [3 4]])
+                                    :colcov (np/matrix [[1 0]
+                                                        [0 4]])
+                                    :rowcov (np/matrix [[1 0]
+                                                        [0 4]]))
+                 samples (pm/sample_prior_predictive)]
+             samples))
 
 
 
 
 
-(let [name1 main-name1
-      name2 main-name2
-      models [0 0]
-      offsets [10 0]
-      {:keys [obs obs-datasets]}
-      (read-data [name1 name2]
-                 {:models models
-                  :offsets offsets
-                  ;; :limit 50
-                  })
-      structures (->> obs
-                      (mapv #(-> %
-                                 (tensor/transpose [1 0]))))
-      view-limit 50
-      tensor->cljs (fn [tensor]
-                     (-> tensor
-                         (tensor/transpose [1 0])
-                         xyz-tensor->dataset
-                         (tc/head view-limit)
-                         util/prep-dataset-for-cljs))]
-  (->> {:prot1-dataset  (-> structures
-                            first
-                            tensor->cljs)
-        :prot2-dataset (-> structures
-                           second
-                           tensor->cljs)
-        :index (-> structures
-                   (->> (map dtype/shape))
-                   pr-str)}
-       (vector '(fn [{:keys [prot1-dataset
-                             prot2-dataset
-                             index]}]
-                  [:div
-                   index
-                   [plotly
-                    {:data [(-> prot1-dataset
-                                (merge {:type :scatter3d
-                                        :mode :lines+markers
-                                        :opacity 1
-                                        :marker {:size 3
-                                                 :color "purple"}}))
-                            (-> prot2-dataset
-                                (merge {:type :scatter3d
-                                        :mode :lines+markers
-                                        :opacity 1
-                                        :marker {:size 3
-                                                 :color "orange"}}))]}]]))
-       kind/hiccup))
 
 
-
-
-(def results
-  (let [name1 main-name1
-        name2 main-name2
-        models [0 0]
-        offsets [10 0]
-        samples 100
-        {:keys [obs obs-datasets]}
-        (read-data [name1 name2]
-                   {:models models
-                    :offsets offsets
-                    :limit 100})
-        structures (->> obs
-                        (mapv #(-> %
-                                   (tensor/transpose [1 0]))))
-        np-structures (->> structures
-                           (mapv tensor2d->np-matrix))
-        ;; max-distance (->max-distance-to-origin (obs 0))
-        ;; average-structure (->average-structure obs)
-        shape (-> (obs 0)
-                  dtype/shape
-                  reverse
-                  vec)
-        [space-dimension n-residues] shape]
-    (py/with [model (pm/Model)]
-             (let [M (pm/Cauchy "M"
-                                :alpha 0
-                                :beta 1
-                                :shape shape)
-                   M0 (pm/Deterministic "M0"
-                                        (operator/sub
-                                         M
-                                         (pt/mean M)))
-                   t (pm/Normal "t" :shape [space-dimension]) ; the shift
-                   u (pm/Uniform "u" :shape [space-dimension]) ; randomization of rotation
-                   R (pm/Deterministic "R" (rotate-q u)) ; the rotation matrix
-                   U (pm/HalfNormal "U"
-                                    :sigma 0.01 ; TODO: Consider some prior here
-                                    :shape [n-residues])
-                   M0_rotated (pm/Deterministic "M0_rotated"
-                                                (pt/dot R M0))
-                   X1 (pm/MatrixNormal "X1"
-                                       :mu M0
-                                       :rowcov (np/eye space-dimension)
-                                       :colcov (pt/diag U)
-                                       :observed (np-structures 0))
-                   X2 (pm/MatrixNormal "X2"
-                                       :mu (-> M0_rotated
-                                               ;; conjugating with transpose
-                                               ;; to make broadcasting work
-                                               pt/transpose
-                                               (operator/add t)
-                                               pt/transpose)
-                                       :rowcov (np/eye space-dimension)
-                                       :colcov (pt/diag U)
-                                       :observed (np-structures 1))
-                   M0_adapted (pm/Deterministic "M0_adapted"
-                                                (-> (pt/dot R M0)
-                                                    pt/transpose
-                                                    (operator/add t)
-                                                    pt/transpose))
-                   X1_adapted (pm/Deterministic "X1_adapted"
-                                                (-> (pt/dot R X1)
-                                                    pt/transpose
-                                                    (operator/add t)
-                                                    pt/transpose))
-                   prot1_adapted (pm/Deterministic "prot1_adapted"
-                                                   (-> (np-structures 0)
-                                                       (->> (pt/dot R))
+(def model
+  (memoize
+   (fn [{:keys [residues-limit tune]}]
+     (let [{:keys [obs obs-datasets]}
+           (read-data [prot-name1 prot-name2]
+                      {:limit residues-limit})
+           structures (->> obs
+                           (mapv #(-> %
+                                      (tensor/transpose [1 0]))))
+           np-structures (->> structures
+                              (mapv util/tensor2d->np-matrix))
+           shape (-> (obs 0)
+                     dtype/shape
+                     reverse
+                     vec)
+           [space-dimension n-residues] shape]
+       (py/with [model (pm/Model)]
+                (let [M (pm/Cauchy "M"
+                                   :alpha 0
+                                   :beta 1
+                                   :shape shape)
+                      M0 (pm/Deterministic "M0"
+                                           (operator/sub
+                                            M
+                                            (pt/mean M)))
+                      t (pm/Normal "t" :shape [space-dimension]) ; the shift
+                      u (pm/Uniform "u" :shape [space-dimension]) ; randomization of rotation
+                      R (pm/Deterministic "R" (rotate-q u)) ; the rotation matrix
+                      U (pm/HalfNormal "U"
+                                       :sigma 0.01 ; TODO: Consider some prior here
+                                       :shape [n-residues])
+                      M0_rotated (pm/Deterministic "M0_rotated"
+                                                   (pt/dot R M0))
+                      X1 (pm/MatrixNormal "X1"
+                                          :mu M0
+                                          :rowcov (np/eye space-dimension)
+                                          :colcov (pt/diag U)
+                                          :observed (np-structures 0))
+                      X2 (pm/MatrixNormal "X2"
+                                          :mu (-> M0_rotated
+                                                  ;; conjugating with transpose
+                                                  ;; to make broadcasting work
+                                                  pt/transpose
+                                                  (operator/add t)
+                                                  pt/transpose)
+                                          :rowcov (np/eye space-dimension)
+                                          :colcov (pt/diag U)
+                                          :observed (np-structures 1))
+                      M0_adapted (pm/Deterministic "M0_adapted"
+                                                   (-> (pt/dot R M0)
                                                        pt/transpose
                                                        (operator/add t)
                                                        pt/transpose))
-                   prior-predictive-samples (pm/sample_prior_predictive)
-                   idata (pm/sample :chains 1
-                                    :draws 500
-                                    :tune 500)
-                   posterior-predictive-samples (pm/sample_posterior_predictive
-                                                 idata)]
-               {:structures structures
-                :prior-predictive-samples prior-predictive-samples
-                :posterior-predictive-samples posterior-predictive-samples
-                :idata idata}))))
+                      X1_adapted (pm/Deterministic "X1_adapted"
+                                                   (-> (pt/dot R X1)
+                                                       pt/transpose
+                                                       (operator/add t)
+                                                       pt/transpose))
+                      prot1_adapted (pm/Deterministic "prot1_adapted"
+                                                      (-> (np-structures 0)
+                                                          (->> (pt/dot R))
+                                                          pt/transpose
+                                                          (operator/add t)
+                                                          pt/transpose))
+                      prior-predictive-samples (pm/sample_prior_predictive)
+                      idata (pm/sample :chains 1
+                                       :draws 200
+                                       :tune tune)
+                      posterior-predictive-samples (pm/sample_posterior_predictive
+                                                    idata)]
+                  {:structures structures
+                   :prior-predictive-samples prior-predictive-samples
+                   :posterior-predictive-samples posterior-predictive-samples
+                   :idata idata}))))))
+
+
+(defn show-results [results {:keys [view-limit]}]
+  (let [tensor->cljs (fn [tensor aname]
+                       (-> tensor
+                           (tensor/transpose [1 0])
+                           xyz-tensor->dataset
+                           (tc/head view-limit)
+                           util/prep-dataset-for-cljs))
+        shape (-> results-10-50
+                  :idata
+                  (py.- posterior)
+                  (py.- prot1_adapted)
+                  np/shape)
+        n-chains (first shape)
+        n-samples (second shape)]
+    (->> {:prot1-adapted-datasets
+          (-> results
+              :idata
+              (py.- posterior)
+              (py.- prot1_adapted)
+              util/py-array->clj
+              (tensor/slice 1)
+              (->> (map-indexed
+                    (fn [chain-idx chain-tensor]
+                      (-> chain-tensor
+                          (tensor/slice 1)
+                          (->> (map #(tensor->cljs
+                                      %
+                                      (str "prot1-adapted-chain"
+                                           chain-idx)))))))
+                   (apply concat)
+                   vec))
+          :prot1-chain-idx (->> n-chains
+                                range
+                                (mapcat (fn [chain-idx]
+                                          (repeat n-samples chain-idx)))
+                                vec)
+          :prot2-dataset
+          (-> results
+              :structures
+              second
+              (tensor->cljs "prot2"))}
+         (vector '(fn [{:keys [prot1-adapted-datasets
+                               prot1-chain-idx
+                               prot2-dataset]}]
+                    [plotly
+                     {:data (->> prot1-adapted-datasets
+                                 (map (fn [dataset]
+                                        (-> dataset
+                                            (merge {:type :scatter3d
+                                                    :mode :lines+markers
+                                                    :opacity 0.1
+                                                    :marker {:size 3
+                                                             :color
+                                                             (mapv
+                                                              ["blue"
+                                                               "yellow"
+                                                               "red"
+                                                               "green"]
+                                                              prot1-chain-idx)}}))))
+                                 (cons (-> prot2-dataset
+                                           (merge {:type :scatter3d
+                                                   :mode :lines+markers
+                                                   :opacity 1
+                                                   :marker {:size 3
+                                                            :color "orange"}})))
+                                 vec)}]))
+         kind/hiccup)))
+
+(-> {:residues-limit 100 :tune 200}
+    model
+    (show-results {:view-limit 50}))
 
 
 
 
-(let [view-limit 100
-      tensor->cljs (fn [tensor aname]
-                     (-> tensor
-                         (tensor/transpose [1 0])
-                         xyz-tensor->dataset
-                         (tc/head view-limit)
-                         util/prep-dataset-for-cljs))
-      shape (-> results
-                :idata
-                (py.- posterior)
-                (py.- prot1_adapted)
-                np/shape)
-      n-chains (first shape)
-      n-samples (second shape)]
-  (->> {:prot1-adapted-datasets
-        (-> results
-            :idata
-            (py.- posterior)
-            (py.- prot1_adapted)
-            util/py-array->clj
-            (tensor/slice 1)
-            (->> (map-indexed
-                  (fn [chain-idx chain-tensor]
-                    (-> chain-tensor
-                        (tensor/slice 1)
-                        (->> (map #(tensor->cljs
-                                    %
-                                    (str "prot1-adapted-chain"
-                                         chain-idx)))))))
-                 (apply concat)
-                 vec))
-        :prot1-chain-idx (->> n-chains
-                              range
-                              (mapcat (fn [chain-idx]
-                                        (repeat n-samples chain-idx)))
-                              vec)
-        :prot2-dataset
-        (-> results
-            :structures
-            second
-            (tensor->cljs "prot2"))}
-       (vector '(fn [{:keys [prot1-adapted-datasets
-                             prot1-chain-idx
-                             prot2-dataset]}]
-                  [plotly
-                   {:data (->> prot1-adapted-datasets
-                               (map (fn [dataset]
-                                      (-> dataset
-                                          (merge {:type :scatter3d
-                                                  :mode :lines+markers
-                                                  :opacity 0.05
-                                                  :marker {:size 3
-                                                           :color
-                                                           (mapv
-                                                            ["blue"
-                                                             "yellow"
-                                                             "red"
-                                                             "green"]
-                                                            prot1-chain-idx)}}))))
-                               (cons (-> prot2-dataset
-                                         (merge {:type :scatter3d
-                                                 :mode :lines+markers
-                                                 :opacity 1
-                                                 :marker {:size 3
-                                                          :color "orange"}})))
-                               vec)}]))
-       kind/hiccup))
+
+(-> {:residues-limit 100 :tune 50}
+    model
+    (show-results {:view-limit 50}))
+
+
+
+(-> {:residues-limit 100 :tune 15}
+    model
+    (show-results {:view-limit 50}))
 
 
 
 
-
-
+(-> {:residues-limit 100 :tune 5}
+    model
+    (show-results {:view-limit 50}))
 
 
 (let [view-limit 12
@@ -715,7 +637,6 @@
     (py.- prior)
     (py.- "M0")
     np/mean) ; should be about zero
-
 
 
 

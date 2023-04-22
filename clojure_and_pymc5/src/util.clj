@@ -26,3 +26,9 @@
   [dataset]
   (-> dataset
       (update-vals vec)))
+
+(defn tensor2d->np-matrix [tensor]
+  (->> tensor
+       (map np/array)
+       python/list
+       np/matrix))
