@@ -85,9 +85,9 @@
      (into {}))
 
 
-(defn cylinders-view [cylinders]
+(defn shapes-view [shapes]
   (kind/hiccup
-   ['(fn [cylinders]
+   ['(fn [shapes]
        [:div
         {:style {:width "100%"
                  :height "500px"
@@ -96,29 +96,30 @@
                 (let [config (clj->js
                               {:backgroundColor "0xffffff"})
                       viewer (.createViewer js/$3Dmol el #_config)]
-                  #_(.addSphere viewer (clj->js
-                                        {:center {:x 0
-                                                  :y 0
-                                                  :z 0}
-                                         :radius 1
-                                         :color "green"}))
-                  (doseq [cyl cylinders]
-                    (.addCylinder viewer (clj->js cyl)))
+                  (doseq [[shape-type shape-data] shapes]
+                    (case shape-type
+                      :sphere (.addSphere viewer (clj->js shape-data))
+                      :cylinder (.addCylinder viewer (clj->js shape-data))))
                   (.zoomTo viewer)
                   (.render viewer)
                   (.zoom viewer 0.8 1000)))}
         ;; need to keep this symbol to let Clay infer the necessary dependency
         'three-d-mol])
-    (vec cylinders)]))
+    (vec shapes)]))
 
-(-> [{:start {:x 0 :y 10 :z 20}
-      :end {:x 10 :y 0 :z 30}
-      :radius 0.5
-      :fromCap false
-      :toCap true
-      :color :teal
-      :alpha 0.5}]
-    cylinders-view)
+(-> [[:sphere {:center {:x 0
+                        :y 0
+                        :z 0}
+               :radius 1
+               :color "green"}]
+     [:cylinder {:start {:x 0 :y 10 :z 20}
+                 :end {:x 10 :y 0 :z 30}
+                 :radius 0.5
+                 :fromCap false
+                 :toCap true
+                 :color :teal
+                 :alpha 0.5}]]
+    shapes-view)
 
 
 (defn extract-coordinates-from-pdb
@@ -199,14 +200,14 @@
 
 ;; Compare the datasets visually
 
-(defn xyz-dataset->cyliders [dataset options]
+(defn xyz-dataset->shapes [dataset options]
   (-> dataset
       (tc/rows :as-maps)
       (->> ((juxt identity rest))
            (apply mapv (fn [xyz0 xyz1]
-                         (merge {:start xyz0
-                                 :end xyz1}
-                                options))))))
+                         [:cylinder (merge {:start xyz0
+                                            :end xyz1}
+                                           options)])))))
 
 
 (let [{:keys [obs obs-datasets]} (-> [protein-name1 protein-name2]
@@ -219,10 +220,9 @@
               (fn [dataset color radius]
                 (-> dataset
                     (tc/head view-limit)
-                    (xyz-dataset->cyliders {:radius radius
-                                            :color color}))))
-       vec
-       cylinders-view))
+                    (xyz-dataset->shapes {:radius radius
+                                          :color color}))))
+       shapes-view))
 
 
 (let [{:keys [obs obs-datasets]} (-> [protein-name1 protein-name2]
@@ -398,60 +398,59 @@
                    :idata idata}))))))
 
 
-(->> [(-> {:residues-limit 100 :tune 20}
-          model)
-      {:view-limit 50}]
-     (apply (fn [results {:keys [view-limit]}]
-              (let [tensor->dataset (fn [tensor]
-                                      (-> tensor
-                                          (tensor/transpose [1 0])
-                                          util/xyz-tensor->dataset
-                                          (tc/head view-limit)))
-                    shape (-> results
-                              :idata
-                              (py.- posterior)
-                              (py.- prot1_adapted)
-                              np/shape)
-                    n-chains (first shape)
-                    n-samples (second shape)
-                    prot1-adapted-datasets (-> results
-                                               :idata
-                                               (py.- posterior)
-                                               (py.- prot1_adapted)
-                                               util/py-array->clj
+(defn show-results-3dmol [results {:keys [residues-view-limit
+                                          samples-view-limit]}]
+  (let [tensor->dataset (fn [tensor]
+                          (-> tensor
+                              (tensor/transpose [1 0])
+                              util/xyz-tensor->dataset
+                              (tc/head residues-view-limit)))
+        shape (-> results
+                  :idata
+                  (py.- posterior)
+                  (py.- prot1_adapted)
+                  np/shape)
+        n-chains (first shape)
+        n-samples (second shape)
+        prot1-adapted-datasets (-> results
+                                   :idata
+                                   (py.- posterior)
+                                   (py.- prot1_adapted)
+                                   util/py-array->clj
+                                   (tensor/slice 1)
+                                   (->> (map-indexed
+                                         (fn [chain-idx chain-tensor]
+                                           (-> chain-tensor
                                                (tensor/slice 1)
-                                               (->> (map-indexed
-                                                     (fn [chain-idx chain-tensor]
-                                                       (-> chain-tensor
-                                                           (tensor/slice 1)
-                                                           (->> (map tensor->dataset)))))
-                                                    (apply concat)
-                                                    vec))
-                    prot2-dataset (-> results
-                                      :structures
-                                      second
-                                      tensor->dataset)]
-                (->> prot1-adapted-datasets
-                     (take 10)
-                     (mapcat #(xyz-dataset->cyliders
-                               %
-                               {:alpha 0.4
-                                :radius 0.1
-                                :color :purple}))
-                     (concat (-> prot2-dataset
-                                 (xyz-dataset->cyliders
-                                  {:radius 0.3
-                                   :color :orange})))
-                     cylinders-view)))))
+                                               (->> (map tensor->dataset)))))
+                                        (apply concat)
+                                        vec))
+        prot2-dataset (-> results
+                          :structures
+                          second
+                          tensor->dataset)]
+    (->> prot1-adapted-datasets
+         (take samples-view-limit)
+         (mapcat #(xyz-dataset->shapes
+                   %
+                   {:alpha 0.4
+                    :radius 0.1
+                    :color :purple}))
+         (concat (-> prot2-dataset
+                     (xyz-dataset->shapes
+                      {:radius 0.3
+                       :color :orange})))
+         shapes-view)))
 
 
 
-(defn show-results [results {:keys [view-limit]}]
+(defn show-results [results {:keys [residues-view-limit
+                                    samples-view-limit]}]
   (let [tensor->cljs (fn [tensor aname]
                        (-> tensor
                            (tensor/transpose [1 0])
                            util/xyz-tensor->dataset
-                           (tc/head view-limit)
+                           (tc/head residues-view-limit)
                            util/prep-dataset-for-cljs))
         shape (-> results
                   :idata
@@ -515,26 +514,15 @@
          kind/hiccup)))
 
 
-(comment
-  (-> {:residues-limit 100 :tune 200}
-      model
-      (show-results {:view-limit 50}))
-
-
-  (-> {:residues-limit 100 :tune 50}
-      model
-      (show-results {:view-limit 50}))
-
-
-  (-> {:residues-limit 100 :tune 15}
-      model
-      (show-results {:view-limit 50})))
-
-(-> {:residues-limit 100 :tune 5}
-    model
-    (show-results {:view-limit 50}))
-
-
+(->> [5 15 50 200]
+     (mapcat (fn [tune]
+               (let [m (model {:residues-limit 50
+                               :tune tune})]
+                 [{:tune tune}
+                  (show-results m {:residues-view-limit 50
+                                   :samples-view-limit 10})
+                  (show-results-3dmol m {:residues-view-limit 50
+                                         :samples-view-limit 10})]))))
 
 
 :bye
