@@ -1,5 +1,5 @@
 {:deps {org.scicloj/kindly-default {:mvn/version "1-alpha4"}
-        org.scicloj/clay {:mvn/version "2-alpha19"}
+        org.scicloj/clay {:mvn/version "2-alpha22-SNAPSHOT"}
         org.scicloj/noj {:mvn/version "1-alpha7"}
         cnuernber/dtype-next {:mvn/version "10.000-beta-48"}}
  :paths ["src"]}

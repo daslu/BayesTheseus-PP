@@ -36,10 +36,94 @@
 
 (def protein-name1 "7ju5clean")
 (def protein-name2 "AF-A0A024R7T2-F1-model_v4-clean")
+(def protein-names [protein-name1 protein-name2])
+
+(defn name->path [nam]
+  (str "data/" nam ".pdb"))
+
+(defonce protein-name->pdb-data
+  (memoize
+   (fn [protein-name]
+     (-> protein-name
+         name->path
+         slurp))))
+
+(defn pdb-view [pdb]
+  (kind/hiccup
+   ['(fn [pdb]
+       [:div
+        {:style {:width "100%"
+                 :height "500px"
+                 :position "relative"}
+         :ref (fn [el]
+                (let [config (clj->js
+                              {:backgroundColor "0xffffff"})
+                      viewer (.createViewer js/$3Dmol el #_config)]
+                  (.addModelsAsFrames viewer pdb "pdb")
+                  (.setStyle viewer
+                             (clj->js {})
+                             (clj->js {:stick {:color :spectrum}}))
+                  (.addSphere viewer (clj->js
+                                      {:center {:x 0
+                                                :y 0
+                                                :z 0}
+                                       :radius 1
+                                       :color "green"}))
+                  (.zoomTo viewer)
+                  (.render viewer)
+                  (.zoom viewer 0.8 1000)))}
+        ;; need to keep this symbol to let Clay infer the necessary dependency
+        'three-d-mol])
+    pdb]))
+
+(->> protein-names
+     (map (fn [nam]
+            [nam
+             (-> nam
+                 protein-name->pdb-data
+                 pdb-view)]) )
+     (into {}))
+
+
+(defn cylinders-view [cylinders]
+  (kind/hiccup
+   ['(fn [cylinders]
+       [:div
+        {:style {:width "100%"
+                 :height "500px"
+                 :position "relative"}
+         :ref (fn [el]
+                (let [config (clj->js
+                              {:backgroundColor "0xffffff"})
+                      viewer (.createViewer js/$3Dmol el #_config)]
+                  #_(.addSphere viewer (clj->js
+                                        {:center {:x 0
+                                                  :y 0
+                                                  :z 0}
+                                         :radius 1
+                                         :color "green"}))
+                  (doseq [cyl cylinders]
+                    (.addCylinder viewer (clj->js cyl)))
+                  (.zoomTo viewer)
+                  (.render viewer)
+                  (.zoom viewer 0.8 1000)))}
+        ;; need to keep this symbol to let Clay infer the necessary dependency
+        'three-d-mol])
+    (vec cylinders)]))
+
+(-> [{:start {:x 0 :y 10 :z 20}
+      :end {:x 10 :y 0 :z 30}
+      :radius 0.5
+      :fromCap false
+      :toCap true
+      :color :teal
+      :alpha 0.5}]
+    cylinders-view)
+
 
 (defn extract-coordinates-from-pdb
   ([protein-name]
-   (let [filepath (str "data/" protein-name ".pdb")
+   (let [filepath (name->path protein-name)
          parser (Bio.PDB/PDBParser)
          structure (py. parser get_structure protein-name filepath)]
      (-> structure
@@ -114,6 +198,32 @@
 
 
 ;; Compare the datasets visually
+
+(defn xyz-dataset->cyliders [dataset options]
+  (-> dataset
+      (tc/rows :as-maps)
+      (->> ((juxt identity rest))
+           (apply mapv (fn [xyz0 xyz1]
+                         (merge {:start xyz0
+                                 :end xyz1}
+                                options))))))
+
+
+(let [{:keys [obs obs-datasets]} (-> [protein-name1 protein-name2]
+                                     read-data)
+      colors [:purple :orange]
+      radii [1 1]
+      view-limit 50]
+  (->> [obs-datasets colors radii]
+       (apply mapcat
+              (fn [dataset color radius]
+                (-> dataset
+                    (tc/head view-limit)
+                    (xyz-dataset->cyliders {:radius radius
+                                            :color color}))))
+       vec
+       cylinders-view))
+
 
 (let [{:keys [obs obs-datasets]} (-> [protein-name1 protein-name2]
                                      read-data)
@@ -212,7 +322,7 @@
                (pt/stack [R20 R21 R22])])))
 
 
-(def model
+(defonce model
   (memoize
    (fn [{:keys [residues-limit tune]}]
      (let [{:keys [obs obs-datasets]}
@@ -288,7 +398,52 @@
                    :idata idata}))))))
 
 
-(model {:residues-limit 100 :tune 15})
+(->> [(-> {:residues-limit 100 :tune 20}
+          model)
+      {:view-limit 50}]
+     (apply (fn [results {:keys [view-limit]}]
+              (let [tensor->dataset (fn [tensor]
+                                      (-> tensor
+                                          (tensor/transpose [1 0])
+                                          util/xyz-tensor->dataset
+                                          (tc/head view-limit)))
+                    shape (-> results
+                              :idata
+                              (py.- posterior)
+                              (py.- prot1_adapted)
+                              np/shape)
+                    n-chains (first shape)
+                    n-samples (second shape)
+                    prot1-adapted-datasets (-> results
+                                               :idata
+                                               (py.- posterior)
+                                               (py.- prot1_adapted)
+                                               util/py-array->clj
+                                               (tensor/slice 1)
+                                               (->> (map-indexed
+                                                     (fn [chain-idx chain-tensor]
+                                                       (-> chain-tensor
+                                                           (tensor/slice 1)
+                                                           (->> (map tensor->dataset)))))
+                                                    (apply concat)
+                                                    vec))
+                    prot2-dataset (-> results
+                                      :structures
+                                      second
+                                      tensor->dataset)]
+                (->> prot1-adapted-datasets
+                     (take 10)
+                     (mapcat #(xyz-dataset->cyliders
+                               %
+                               {:alpha 0.4
+                                :radius 0.1
+                                :color :purple}))
+                     (concat (-> prot2-dataset
+                                 (xyz-dataset->cyliders
+                                  {:radius 0.3
+                                   :color :orange})))
+                     cylinders-view)))))
+
 
 
 (defn show-results [results {:keys [view-limit]}]
@@ -360,19 +515,20 @@
          kind/hiccup)))
 
 
-(-> {:residues-limit 100 :tune 200}
-    model
-    (show-results {:view-limit 50}))
+(comment
+  (-> {:residues-limit 100 :tune 200}
+      model
+      (show-results {:view-limit 50}))
 
 
-(-> {:residues-limit 100 :tune 50}
-    model
-    (show-results {:view-limit 50}))
+  (-> {:residues-limit 100 :tune 50}
+      model
+      (show-results {:view-limit 50}))
 
 
-(-> {:residues-limit 100 :tune 15}
-    model
-    (show-results {:view-limit 50}))
+  (-> {:residues-limit 100 :tune 15}
+      model
+      (show-results {:view-limit 50})))
 
 (-> {:residues-limit 100 :tune 5}
     model
