@@ -22,8 +22,6 @@
                 'operator
                 '[arviz :as az]
                 '[arviz.style :as az.style]
-                '[pandas :as pd]
-                '[matplotlib.pyplot :as plt]
                 '[numpy :as np]
                 '[numpy.random :as np.random]
                 '[pymc :as pm]
@@ -398,7 +396,7 @@
                    :idata idata}))))))
 
 
-(defn show-results-3dmol [results {:keys [residues-view-limit
+(defn view-results-3dmol [results {:keys [residues-view-limit
                                           samples-view-limit]}]
   (let [tensor->dataset (fn [tensor]
                           (-> tensor
@@ -433,8 +431,8 @@
          (take samples-view-limit)
          (mapcat #(xyz-dataset->shapes
                    %
-                   {:alpha 0.4
-                    :radius 0.1
+                   {:alpha 0.6
+                    :radius 0.3
                     :color :purple}))
          (concat (-> prot2-dataset
                      (xyz-dataset->shapes
@@ -444,7 +442,7 @@
 
 
 
-(defn show-results [results {:keys [residues-view-limit
+(defn view-results [results {:keys [residues-view-limit
                                     samples-view-limit]}]
   (let [tensor->cljs (fn [tensor aname]
                        (-> tensor
@@ -514,15 +512,25 @@
          kind/hiccup)))
 
 
-(->> [5 15 50 200]
-     (mapcat (fn [tune]
-               (let [m (model {:residues-limit 50
-                               :tune tune})]
-                 [{:tune tune}
-                  (show-results m {:residues-view-limit 50
-                                   :samples-view-limit 10})
-                  (show-results-3dmol m {:residues-view-limit 50
-                                         :samples-view-limit 10})]))))
+(defn report [{:keys [tune]}]
+  (let [m (model {:residues-limit 100
+                  :tune tune})]
+    #_{:tune tune}
+    #_(view-results m {:residues-view-limit 100
+                       :samples-view-limit 10})
+    (view-results-3dmol m {:residues-view-limit 100
+                           :samples-view-limit 10})))
+
+
+(comment
+  (->> [5 15 50 200]
+       (mapcat (fn [tune]
+                 (report {:tune tune})))))
+
+
+
+
+
 
 
 :bye

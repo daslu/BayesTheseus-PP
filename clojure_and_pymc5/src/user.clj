@@ -9,6 +9,17 @@
 ;; Start Clay.
 (clay/start!)
 
+(clay/swap-options!
+ assoc
+ :quarto {:format {:revealjs {:theme :serif
+                              ;; :theme :dark
+                              :navigation-mode :vertical
+                              :transition :slide
+                              :background-transition :fade
+                              :incremental true
+                              :embed-resources true
+                              :code-line-numbers false}}})
+
 ;; ## Useful commands
 
 (comment
