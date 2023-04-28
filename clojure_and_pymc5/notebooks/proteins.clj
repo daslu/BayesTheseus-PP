@@ -410,35 +410,60 @@
                   np/shape)
         n-chains (first shape)
         n-samples (second shape)
-        prot1-adapted-datasets (-> results
-                                   :idata
-                                   (py.- posterior)
-                                   (py.- prot1_adapted)
-                                   util/py-array->clj
-                                   (tensor/slice 1)
-                                   (->> (map-indexed
-                                         (fn [chain-idx chain-tensor]
-                                           (-> chain-tensor
-                                               (tensor/slice 1)
-                                               (->> (map tensor->dataset)))))
-                                        (apply concat)
-                                        vec))
-        prot2-dataset (-> results
-                          :structures
-                          second
-                          tensor->dataset)]
-    (->> prot1-adapted-datasets
-         (take samples-view-limit)
-         (mapcat #(xyz-dataset->shapes
-                   %
-                   {:alpha 0.6
-                    :radius 0.3
-                    :color :purple}))
-         (concat (-> prot2-dataset
-                     (xyz-dataset->shapes
-                      {:radius 0.3
-                       :color :orange})))
-         shapes-view)))
+        tensor->cljs (fn [tensor aname]
+                       (-> tensor
+                           (tensor/transpose [1 0])
+                           util/xyz-tensor->dataset
+                           (tc/head residues-view-limit)
+                           util/prep-dataset-for-cljs))
+        shape (-> results
+                  :idata
+                  (py.- posterior)
+                  (py.- prot1_adapted)
+                  np/shape)
+        n-chains (first shape)
+        n-samples (second shape)
+        prot1-adapted-tensors (-> results
+                                  :idata
+                                  (py.- posterior)
+                                  (py.- prot1_adapted)
+                                  util/py-array->clj
+                                  (tensor/slice 1)
+                                  (->> (map #(tensor/slice % 1))
+                                       (apply concat)))
+        prot1-adapted-datasets (->> prot1-adapted-tensors
+                                    (mapv tensor->dataset))
+        prot2-tensor (-> results
+                         :structures
+                         second)
+        prot2-dataset (-> prot2-tensor
+                          tensor->dataset)
+        mean-rmsd (->> prot1-adapted-tensors
+                       (map (fn [prot1-tensor]
+                              (-> (fun/- prot1-tensor
+                                         prot2-tensor)
+                                  fun/sq
+                                  fun/mean
+                                  fun/sqrt)))
+                       fun/mean)
+        prot1-chain-idx (->> n-chains
+                             range
+                             (mapcat (fn [chain-idx]
+                                       (repeat n-samples chain-idx)))
+                             vec)]
+    [{:mean-rmsd mean-rmsd}
+     (->> prot1-adapted-datasets
+          (take samples-view-limit)
+          (mapcat #(xyz-dataset->shapes
+                    %
+                    {:alpha 0.6
+                     :radius 0.3
+                     :color :purple}))
+          (concat (-> prot2-dataset
+                      (xyz-dataset->shapes
+                       {:radius 0.3
+                        :color :orange})))
+          shapes-view)]))
 
 
 
@@ -456,34 +481,41 @@
                   (py.- prot1_adapted)
                   np/shape)
         n-chains (first shape)
-        n-samples (second shape)]
-    (->> {:prot1-adapted-datasets
-          (-> results
-              :idata
-              (py.- posterior)
-              (py.- prot1_adapted)
-              util/py-array->clj
-              (tensor/slice 1)
-              (->> (map-indexed
-                    (fn [chain-idx chain-tensor]
-                      (-> chain-tensor
-                          (tensor/slice 1)
-                          (->> (map #(tensor->cljs
-                                      %
-                                      (str "prot1-adapted-chain"
-                                           chain-idx)))))))
-                   (apply concat)
-                   vec))
-          :prot1-chain-idx (->> n-chains
-                                range
-                                (mapcat (fn [chain-idx]
-                                          (repeat n-samples chain-idx)))
-                                vec)
-          :prot2-dataset
-          (-> results
-              :structures
-              second
-              (tensor->cljs "prot2"))}
+        n-samples (second shape)
+        prot1-adapted-tensors (-> results
+                                  :idata
+                                  (py.- posterior)
+                                  (py.- prot1_adapted)
+                                  util/py-array->clj
+                                  (tensor/slice 1)
+                                  (->> (map #(tensor/slice % 1))
+                                       (apply concat)))
+        prot1-adapted-datasets (->> prot1-adapted-tensors
+                                    (map-indexed (fn [i tensor]
+                                                   (-> tensor
+                                                       (tensor->cljs (str "prot1-" i)))))
+                                    vec)
+        prot2-tensor (-> results
+                         :structures
+                         second)
+        prot2-dataset (-> prot2-tensor
+                          (tensor->cljs "prot2"))
+        mean-rmsd (->> prot1-adapted-tensors
+                       (map (fn [prot1-tensor]
+                              (-> (fun/- prot1-tensor
+                                         prot2-tensor)
+                                  fun/sq
+                                  fun/mean
+                                  fun/sqrt)))
+                       fun/mean)
+        prot1-chain-idx (->> n-chains
+                             range
+                             (mapcat (fn [chain-idx]
+                                       (repeat n-samples chain-idx)))
+                             vec)]
+    (->> {:prot1-adapted-datasets prot1-adapted-datasets
+          :prot1-chain-idx prot1-chain-idx
+          :prot2-dataset prot2-dataset}
          (vector '(fn [{:keys [prot1-adapted-datasets
                                prot1-chain-idx
                                prot2-dataset]}]
@@ -525,9 +557,13 @@
 (comment
   (->> [5 15 50 200]
        (mapcat (fn [tune]
-                 (report {:tune tune})))))
+                 (report {:tune tune}))))
 
-
+  (-> {:tune 5
+       :residues-limit 50}
+      model
+      (view-results-3dmol {:residues-view-limit 100
+                           :samples-view-limit 10})))
 
 
 

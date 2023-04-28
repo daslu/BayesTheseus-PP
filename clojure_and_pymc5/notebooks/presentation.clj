@@ -8,5 +8,6 @@
                 (-> x (* 1.25) int)))
      (take 15)
      (mapcat (fn [tune]
-               [{:tune tune}
-                (proteins/report {:tune tune})])))
+               (concat
+                [{:tune tune}]
+                (proteins/report {:tune tune})))))
