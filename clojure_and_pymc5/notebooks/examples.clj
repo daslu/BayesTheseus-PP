@@ -20,7 +20,8 @@
             [tablecloth.api :as tc])
   (:import java.lang.Math))
 
-^:kindly/hide-code?
+^{:kindly/hide-code? true
+  :kind/hidden true}
 (require-python '[builtins :as python]
                 'operator
                 '[arviz :as az]
@@ -36,7 +37,7 @@
                 '[math])
 
 
-;; # Bayesian Computation and Modeling in Python, Exercise 1M21
+;; # Bayesian Modeling and Computation in Python, Exercise 1M21
 
 ;; ## A probabilistic model
 
