@@ -410,12 +410,6 @@
                   np/shape)
         n-chains (first shape)
         n-samples (second shape)
-        tensor->cljs (fn [tensor aname]
-                       (-> tensor
-                           (tensor/transpose [1 0])
-                           util/xyz-tensor->dataset
-                           (tc/head residues-view-limit)
-                           util/prep-dataset-for-cljs))
         shape (-> results
                   :idata
                   (py.- posterior)
@@ -544,13 +538,14 @@
          kind/hiccup)))
 
 
-(defn report [{:keys [tune]}]
-  (let [m (model {:residues-limit 100
+(defn report [{:keys [tune
+                      residues-limit]}]
+  (let [m (model {:residues-limit residues-limit
                   :tune tune})]
     #_{:tune tune}
     #_(view-results m {:residues-view-limit 100
                        :samples-view-limit 10})
-    (view-results-3dmol m {:residues-view-limit 100
+    (view-results-3dmol m {:residues-view-limit 50
                            :samples-view-limit 10})))
 
 
